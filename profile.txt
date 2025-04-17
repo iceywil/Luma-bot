@@ -1,0 +1,13 @@
+Company: Edging
+Company Website: www.edging.io
+Designation: CEO
+Email: redacted@example.com
+Name : Example User
+Github: iceywil
+Telegram : iceywil
+Twitter : iceywil_
+x.com : iceywil_
+Location: Paris, France
+Name: Example User
+Type: Founder, Technical Founder, Investor
+T-shirt Size : M
