@@ -11,41 +11,11 @@ import path from 'path';
 // Load environment variables from .env file
 dotenv.config();
 
-// Define processed events file path
-const processedEventsFile = 'events.txt';
 // Define file for events that failed registration
 const toRegisterFile = 'to_register.txt';
 
 // Close readline interface setup, as it's handled in modalHandler now
 // const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-// --- Helper Function for Reading Processed Events ---
-async function readProcessedEvents(): Promise<Set<string>> {
-  try {
-    const data = await fs.readFile(processedEventsFile, 'utf8');
-    // Split by newline, trim whitespace, and filter out empty lines
-    const urls = data.split('\n').map(line => line.trim()).filter(Boolean);
-    console.log(`Loaded ${urls.length} previously processed event URLs from ${processedEventsFile}.`);
-    return new Set(urls);
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      console.log(`${processedEventsFile} not found. Starting fresh.`);
-      return new Set(); // Return empty set if file doesn't exist
-    } else {
-      console.error(`Error reading ${processedEventsFile}:`, error);
-      return new Set(); // Return empty set on other errors too
-    }
-  }
-}
-
-// --- Helper Function for Appending Processed Event ---
-async function appendProcessedEvent(eventUrl: string): Promise<void> {
-    try {
-        await fs.appendFile(processedEventsFile, eventUrl + '\n', 'utf8');
-    } catch (err) {
-        console.error(`\x1b[31mError writing processed event to ${processedEventsFile}:\x1b[0m`, err);
-    }
-}
 
 // --- Helper Function for Appending Failed Event ---
 async function appendToRegisterFile(eventUrl: string): Promise<void> {
@@ -106,9 +76,6 @@ async function main() {
   // Apply stealth plugin
   const stealthPlugin = stealth();
   chromium.use(stealthPlugin);
-
-  // --- Read Processed Events FIRST --- 
-  const processedEvents = await readProcessedEvents();
 
   // --- Define Paths for Persistent Context ---
   // !!! IMPORTANT: Verify this path points to your specific Chrome profile folder (e.g., Default, Profile 1) !!!
@@ -173,19 +140,14 @@ async function main() {
     }, eventCardLinkSelector);
     console.log(`Found ${allEventLinks.length} total event links.`);
 
-    // --- Filter Out Processed Events --- 
-    const eventLinksToProcess = allEventLinks.filter(link => !processedEvents.has(link));
-    console.log(`Found ${eventLinksToProcess.length} new event links to process.`);
-
     // Loop through links and call the processor function
-    for (const link of eventLinksToProcess) {
+    for (const link of allEventLinks) {
         console.log(`\n--- Processing Event: ${link} ---`);
         const registrationSuccess = await processEventPage(page, context, link, config); // Get success status
         
         // --- Record result based on success status --- 
         if (registrationSuccess) {
-             console.log(`Successfully processed ${link}. Recording in ${processedEventsFile}...`);
-             await appendProcessedEvent(link); // Record success in events.txt
+             console.log(`Successfully processed ${link}.`);
         } else {
              console.warn(`Processing failed for ${link}. Recording in ${toRegisterFile}...`);
              await appendToRegisterFile(link); // Record failure in to_register.txt

@@ -18,9 +18,15 @@ export async function chooseBestFreeTicketLLM(
     profileData: Record<string, string>,
     config: Record<string, string>
 ): Promise<string | null> { // Returns the name of the chosen ticket or null
-    console.log(`\n--- Choosing Best Free Ticket LLM Call ---`); 
+    console.log(`\n--- Choosing Best Free Ticket LLM Call (Groq API) ---`); 
     if (ticketOptions.length === 0) {
         console.log("No free ticket options provided.");
+        return null;
+    }
+
+    const groqApiKey = config.GROQ_API_KEY;
+    if (!groqApiKey) {
+        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
         return null;
     }
 
@@ -34,46 +40,51 @@ export async function chooseBestFreeTicketLLM(
         || "Profile: {profileString}, Options: [{optionsString}], Context: {context}. Choose one option name or NULL."; 
 
     // Replace placeholders
-    const prompt = promptTemplate
+    const systemMessage = promptTemplate
         .replace('{profileString}', profileString)
         .replace('{optionsString}', optionsString)
         .replace('{context}', context);
 
     console.log(`Profile Data (for context): ${profileString}`);
     console.log(`Free Ticket Options: [${optionsString}]`);
-    console.log(`Sending prompt to LLM (Ollama deepseek-r1 for ticket choice)...`);
+    console.log(`Sending prompt to Groq LLM (llama-3.1-8b-instant for ticket choice)...`);
 
     try {
-        const response = await fetch("http://localhost:11434/api/generate", {
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
             method: "POST",
             headers: {
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${groqApiKey}`
             },
             body: JSON.stringify({
-                "model": "deepseek-r1",
-                "prompt": prompt,
+                "model": "llama-3.1-8b-instant",
+                "messages": [{ "role": "user", "content": systemMessage }],
                 "stream": false
+                // "temperature": 0.7, // Optional: Adjust temperature as needed
             })
         });
 
         if (response.ok) {
             const data = await response.json();
-            const chosenTicket = data?.response?.trim();
+            const chosenTicket = data?.choices?.[0]?.message?.content?.trim();
             if (chosenTicket && chosenTicket.toUpperCase() !== 'NULL' && ticketOptions.includes(chosenTicket)) {
-                 console.log(`LLM chose ticket: "${chosenTicket}"`);
+                 console.log(`Groq LLM chose ticket: "${chosenTicket}"`);
                  return chosenTicket;
             } else {
-                console.log('LLM did not provide a valid ticket choice or chose NULL.', chosenTicket);
+                console.log('Groq LLM did not provide a valid ticket choice or chose NULL.', chosenTicket);
+                if (data?.choices?.[0]?.finish_reason === 'length') {
+                    console.warn('Groq LLM response may have been truncated due to length.');
+                }
                 return null;
             }
         } else {
-            console.error(`\x1b[31mLLM (Ticket Choice) API request failed:\x1b[0m`, response.status, response.statusText);
+            console.error(`\x1b[31mGroq LLM (Ticket Choice) API request failed:\x1b[0m`, response.status, response.statusText);
             const errorBody = await response.text(); 
             console.error("\x1b[31mError body:\x1b[0m", errorBody);
             return null;
         }
     } catch (error) {
-        console.error("\x1b[31mError during fetch to LLM API (Ticket Choice):\x1b[0m", error);
+        console.error("\x1b[31mError during fetch to Groq LLM API (Ticket Choice):\x1b[0m", error);
         return null; 
     }
 }
@@ -84,13 +95,19 @@ export async function callLLMBatched(
     profileData: Record<string, string>,
     config: Record<string, string>
 ): Promise<Record<string, string | string[] | null>> {
-    console.log(`\n--- Batch LLM Call ---`); 
+    console.log(`\n--- Batch LLM Call (Groq API) ---`); 
     if (fields.length === 0) {
         console.log("No fields require LLM input.");
         return {};
     }
 
-    // --- Prepare Prompt (as before) ---
+    const groqApiKey = config.GROQ_API_KEY;
+    if (!groqApiKey) {
+        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
+        return {};
+    }
+
+    // --- Prepare Prompt (as before, but this will be the user message) ---
     const profileString = JSON.stringify(profileData);
     const fieldDescriptions = fields.map(f => {
         let desc = `Field: "${f.identifier}"${f.isMandatory ? ' (Mandatory *)' : ''} (Type: ${f.type})`;
@@ -134,33 +151,41 @@ export async function callLLMBatched(
     let currentAttempt = 0;
     let baseDelay = 2000; // Start with 2 seconds
 
-    console.log(`Sending prompt to LLM (Ollama deepseek-r1)... (Max Retries: ${maxRetries})`);
+    console.log(`Sending prompt to Groq LLM (llama-3.1-8b-instant)... (Max Retries: ${maxRetries})`);
 
     while (currentAttempt < maxRetries) {
         currentAttempt++;
         console.log(`  Attempt ${currentAttempt}/${maxRetries}...`);
         try {
-            const response = await fetch("http://localhost:11434/api/generate", {
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${groqApiKey}`
                 },
                 body: JSON.stringify({
-                    "model": "deepseek-r1",
-                    "prompt": prompt,
-                    "stream": false
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [{ "role": "user", "content": prompt }],
+                    "stream": false,
+                    // "temperature": 0.2, // Lower temperature for more deterministic JSON output
+                    // "response_format": { "type": "json_object" } // If supported by Groq and model
                 }),
-                signal: AbortSignal.timeout(60000)
+                signal: AbortSignal.timeout(90000) // Increased timeout to 90s for potentially larger payloads
             });
 
             if (response.ok) {
                 const data = await response.json();
-                let rawContentString = data?.response;
+                let rawContentString = data?.choices?.[0]?.message?.content;
+
+                if (data?.choices?.[0]?.finish_reason === 'length') {
+                    console.warn('Groq LLM response may have been truncated due to length (Attempt ${currentAttempt}).');
+                }
+
                 if (!rawContentString) {
-                     console.error('\x1b[31mCould not extract content string from Ollama response (Attempt ${currentAttempt}):\x1b[0m', JSON.stringify(data, null, 2));
+                     console.error('\x1b[31mCould not extract content string from Groq response (Attempt ${currentAttempt}):\x1b[0m', JSON.stringify(data, null, 2));
                      // Let it retry
                  } else {
-                     console.log("Ollama Response Content (Raw):", rawContentString);
+                     console.log("Groq Response Content (Raw):", rawContentString);
                      let jsonString = null;
                      const lastBraceIndex = rawContentString.lastIndexOf('{');
                      if (lastBraceIndex !== -1) {
@@ -177,10 +202,10 @@ export async function callLLMBatched(
                               } 
                          }
                      } else {
-                         console.warn("Could not find any '{' in the Ollama response.");
+                         console.warn("Could not find any '{' in the Groq response.");
                      }
                      if (!jsonString) {
-                         console.error('\x1b[31mCould not find or extract JSON content in Ollama response (Attempt ${currentAttempt}).\x1b[0m');
+                         console.error('\x1b[31mCould not find or extract JSON content in Groq response (Attempt ${currentAttempt}).\x1b[0m');
                          // Let it retry
                      } else {
                          try {
@@ -189,26 +214,31 @@ export async function callLLMBatched(
                              console.log("Corrected JSON string for parsing:", correctedJsonString);
                              
                              const parsedResponse = JSON.parse(correctedJsonString);
-                             console.log("Ollama Response (Parsed JSON):", parsedResponse);
+                             console.log("Groq Response (Parsed JSON):", parsedResponse);
                              if (typeof parsedResponse === 'object' && parsedResponse !== null) {
                                  const finalResponse: Record<string, string | string[] | null> = {};
                                  const fieldTypeMap = new Map(fields.map(f => [f.identifier, f.type])); 
                                  for (const key in parsedResponse) {
                                       if (Object.prototype.hasOwnProperty.call(parsedResponse, key)) {
                                           const value = parsedResponse[key];
+                                          // Ensure the key from LLM response actually corresponds to a requested field
+                                          if (!fieldTypeMap.has(key)) {
+                                              console.warn(`Groq LLM responded with an unexpected key "${key}" not present in the original field request. Skipping.`);
+                                              continue;
+                                          }
                                           const expectedType = fieldTypeMap.get(key);
                                           if (expectedType === 'multiselect') {
                                               if (value === null || (Array.isArray(value) && value.every(item => typeof item === 'string')) || typeof value === 'string') {
                                                   finalResponse[key] = value; 
                                               } else {
-                                                  console.warn(`Ollama Response for multiselect field "${key}" was unexpected type (expected string, string[], or null):`, value, `-> Treating as null.`);
+                                                  console.warn(`Groq LLM Response for multiselect field "${key}" was unexpected type (expected string, string[], or null):`, value, `-> Treating as null.`);
                                                   finalResponse[key] = null;
                                               }
                                           } else {
                                               if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
                                                   finalResponse[key] = value === null ? null : String(value);
                                               } else {
-                                                  console.warn(`Ollama Response for non-multiselect field "${key}" was not string/null:`, value, `-> Converting to string or null.`);
+                                                  console.warn(`Groq LLM Response for non-multiselect field "${key}" was not string/null:`, value, `-> Converting to string or null.`);
                                                   finalResponse[key] = value === null || typeof value === 'undefined' ? null : String(value);
                                               }
                                           }
@@ -216,29 +246,32 @@ export async function callLLMBatched(
                                   }
                                  return finalResponse;
                              } else {
-                                 console.error('\x1b[31mOllama response content was not a valid JSON object (Attempt ${currentAttempt}).\x1b[0m');
+                                 console.error('\x1b[31mGroq response content was not a valid JSON object (Attempt ${currentAttempt}).\x1b[0m');
                                  // Let it retry
                              }
                          } catch (parseError) {
-                             console.error('\x1b[31mError parsing Ollama JSON response (Attempt ${currentAttempt}):\x1b[0m', parseError);
-                             console.error('\x1b[31mRaw Ollama content was:\x1b[0m', jsonString);
+                             console.error('\x1b[31mError parsing Groq JSON response (Attempt ${currentAttempt}):\x1b[0m', parseError);
+                             console.error('\x1b[31mRaw Groq content was:\x1b[0m', rawContentString); // Corrected to rawContentString
                              // Let it retry
                          }
                      }
                  }
             } else { 
-                console.error(`  Ollama API request failed (Attempt ${currentAttempt}):`, response.status, response.statusText);
+                console.error(`  Groq API request failed (Attempt ${currentAttempt}):`, response.status, response.statusText);
                 const errorBody = await response.text(); 
                 console.error("  Error body:", errorBody);
                 if (currentAttempt >= maxRetries) {
-                    console.error(`\x1b[31mOllama API call failed after ${maxRetries} attempts.\x1b[0m`);
+                    console.error(`\x1b[31mGroq API call failed after ${maxRetries} attempts.\x1b[0m`);
                     break;
                 }
             }
         } catch (error: any) {
-            console.error(`  Error during fetch to LLM API (Attempt ${currentAttempt}):\x1b[0m`, error.name, error.message);
+            console.error(`  Error during fetch to Groq API (Attempt ${currentAttempt}):\x1b[0m`, error.name, error.message);
+            if (error.name === 'AbortSignalError') { // Specific handling for timeout
+                console.warn(`  Groq API call timed out after ${90000 / 1000} seconds (Attempt ${currentAttempt}).`);
+            }
             if (currentAttempt >= maxRetries) {
-                console.error(`\x1b[31mOllama API call failed after ${maxRetries} attempts due to fetch error.\x1b[0m`);
+                console.error(`\x1b[31mGroq API call failed after ${maxRetries} attempts due to fetch error.\x1b[0m`);
                 break;
             }
         }
@@ -250,6 +283,6 @@ export async function callLLMBatched(
         }
     }
 
-    console.warn("Ollama call failed after all retries. Returning empty result.");
+    console.warn("Groq LLM call failed after all retries. Returning empty result.");
     return {};
 } 
