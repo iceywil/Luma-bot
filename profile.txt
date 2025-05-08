@@ -1,4 +1,4 @@
-Company: Edging
+Company: 42Blockchain/Edging
 Company Website: www.edging.io
 Designation: CEO
 Email: scherrer.wilfried@gmail.com
