@@ -11,22 +11,6 @@ import path from 'path';
 // Load environment variables from .env file
 dotenv.config();
 
-// Define file for events that failed registration
-const toRegisterFile = 'to_register.txt';
-
-// Close readline interface setup, as it's handled in modalHandler now
-// const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-// --- Helper Function for Appending Failed Event ---
-async function appendToRegisterFile(eventUrl: string): Promise<void> {
-    try {
-        await fs.appendFile(toRegisterFile, eventUrl + '\n', 'utf8');
-        console.log(`  -> Appended failed event URL to ${toRegisterFile}`);
-    } catch (err) {
-        console.error(`\x1b[31mError writing failed event to ${toRegisterFile}:\x1b[0m`, err);
-    }
-}
-
 // --- Helper Function for Scrolling ---
 async function autoScroll(page: Page): Promise<void> {
   console.log('  Starting auto-scroll...');
@@ -79,7 +63,7 @@ async function main() {
 
   // --- Define Paths for Persistent Context ---
   // !!! IMPORTANT: Verify this path points to your specific Chrome profile folder (e.g., Default, Profile 1) !!!
-  const userDataDir = '/Users/a/Library/Application Support/Google/Chrome/'; 
+  const userDataDir = path.resolve(__dirname, '../playwright_chrome_profile'); // Using a dedicated profile directory
   const executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
   console.log(`Launching Chrome (${executablePath}) with profile (${userDataDir}) using stealth...`);
@@ -95,7 +79,6 @@ async function main() {
     ]
   });
   
-  await new Promise(resolve => setTimeout(resolve, 100000));
 
   console.log('Persistent context launched. Getting initial page...');
   // Get the initial page from the persistent context
@@ -107,7 +90,43 @@ async function main() {
   }
   console.log('Initial page obtained.');
 
+  const processingFailures: string[] = []; // Initialize array for failed events
+
   try {
+    // --- Navigate to Login Page and Wait ---
+    const loginUrl = 'https://lu.ma/signin';
+    console.log(`Navigating to login page: ${loginUrl}...`);
+    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    console.log(`Successfully navigated to ${loginUrl}. Please log in if prompted.`);
+    
+    // --- Wait for redirection to home page after login ---
+    console.log('Waiting for redirection to https://lu.ma/home after login...');
+    const homeUrl = 'https://lu.ma/home';
+    const loginCheckTimeout = 180000; // 3 minutes timeout for login
+    const checkInterval = 2000; // Check URL every 2 seconds
+    let currentTime = 0;
+    let loggedIn = false;
+
+    while (currentTime < loginCheckTimeout) {
+        if (page.url() === homeUrl) {
+            console.log('Redirected to home page. Login successful.');
+            loggedIn = true;
+            break;
+        }
+        await page.waitForTimeout(checkInterval);
+        currentTime += checkInterval;
+        if (currentTime % 10000 === 0) { // Log every 10 seconds
+            console.log(`Still waiting for login, current URL: ${page.url()} (${currentTime / 1000}s passed)`);
+        }
+    }
+
+    if (!loggedIn) {
+        console.warn(`Timed out waiting for login redirection to ${homeUrl} after ${loginCheckTimeout / 1000} seconds. Current URL: ${page.url()}. Proceeding anyway...`);
+        // Optionally, you could throw an error here or handle it differently
+        // For now, it will proceed as the old logic would have after the timeout
+    }
+    // --- End Login Step ---
+
     // Read configuration using readConfig again
     const config = await readConfig(); 
     const eventPageUrl = config['EVENT_CALENDAR_URL'];
@@ -149,12 +168,21 @@ async function main() {
         if (registrationSuccess) {
              console.log(`Successfully processed ${link}.`);
         } else {
-             console.warn(`Processing failed for ${link}. Recording in ${toRegisterFile}...`);
-             await appendToRegisterFile(link); // Record failure in to_register.txt
+             console.warn(`Processing failed for ${link}. Adding to failures list.`);
+             // await appendToRegisterFile(link); // REMOVED: Record failure in to_register.txt
+             processingFailures.push(link); // Add to in-memory list
         }
     }
 
-    console.log('\n--- Finished processing all new events ---');
+    console.log('\n--- Finished processing all events ---');
+
+    // Log failed events, if any
+    if (processingFailures.length > 0) {
+        console.warn(`\n--- The following ${processingFailures.length} event(s) failed processing: ---`);
+        processingFailures.forEach(url => console.warn(`  - ${url}`));
+    } else {
+        console.log('\nAll events processed successfully or skipped as per criteria.');
+    }
 
     await new Promise(resolve => setTimeout(resolve, 10000)); // Keep the pause
   } catch (error) {

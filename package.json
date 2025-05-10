@@ -12,6 +12,7 @@
   "dependencies": {
     "@playwright/test": "^1.51.1",
     "@types/node": "^22.14.0",
+    "axios": "^1.9.0",
     "dotenv": "^16.4.7",
     "playwright": "^1.51.1",
     "playwright-extra": "^4.3.6",

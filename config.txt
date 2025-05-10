@@ -6,3 +6,5 @@ LLM_TICKET_CONTEXT="The user is trying to register for an event and there are mu
 LLM_TICKET_PROMPT_TEMPLATE="Given the user's profile data: {profileString}\nAnd the following FREE event ticket options: [{optionsString}]\nContext: {context}\nWhich single ticket option is the most suitable for the user based on their profile (e.g., role, interests)? Respond with ONLY the exact name of the chosen ticket option (e.g., \"Investor Pass\"). If unsure or none seem appropriate, respond with 'NULL'."
 
 GROQ_API_KEY=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
+
+COMPUTER_NAME=a
