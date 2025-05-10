@@ -220,6 +220,11 @@ export async function callLLMBatched(
                                  const fieldTypeMap = new Map(fields.map(f => [f.identifier, f.type])); 
                                  for (const key in parsedResponse) {
                                       if (Object.prototype.hasOwnProperty.call(parsedResponse, key)) {
+                                          // Skip any top-level keys that are literally "NULL"
+                                          if (key === "NULL") {
+                                              console.warn(`Groq LLM responded with a top-level key "NULL". Skipping this key.`);
+                                              continue;
+                                          }
                                           const value = parsedResponse[key];
                                           // Ensure the key from LLM response actually corresponds to a requested field
                                           if (!fieldTypeMap.has(key)) {
@@ -285,4 +290,201 @@ export async function callLLMBatched(
 
     console.warn("Groq LLM call failed after all retries. Returning empty result.");
     return {};
+} 
+
+// --- New LLM Function for API Registration Questions ---
+async function callGroqAPIWithRetries(
+    messages: { role: string; content: string }[],
+    apiKey: string,
+    model: string,
+    temperature: number = 0.1,
+    // stream: boolean = false, // Assuming stream is false for this specific sequential answer use case
+    maxRetries: number = 3,
+    initialDelay: number = 2000
+): Promise<any | null> {
+    let attempt = 0;
+    let delay = initialDelay;
+    while (attempt < maxRetries) {
+        attempt++;
+        console.log(`  Groq API call attempt ${attempt}/${maxRetries} for model ${model}...`);
+        try {
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    "model": model,
+                    "messages": messages,
+                    "stream": false, // Keep stream false for this helper, as we parse full content
+                    "temperature": temperature,
+                }),
+                signal: AbortSignal.timeout(90000) // 90 second timeout per attempt
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data?.choices?.[0]?.finish_reason === 'length') {
+                    console.warn(`Groq LLM response for model ${model} may have been truncated due to length.`);
+                }
+                return data;
+            } else {
+                console.error(`Groq API request failed (attempt ${attempt}/${maxRetries}):`, response.status, response.statusText);
+                const errorBody = await response.text();
+                console.error("Error body:", errorBody.substring(0, 500)); // Log first 500 chars of error
+                
+                let shouldRetry = false;
+                let currentDelay = delay;
+
+                if (response.status === 429) { // Specifically handle 429 Too Many Requests
+                    console.warn("Groq API returned 429 (Too Many Requests).");
+                    shouldRetry = true;
+                    currentDelay = 10000; // Wait 10 seconds for 429 errors
+                } else if (response.status >= 500) { // Retry on general server errors
+                    shouldRetry = true;
+                    // currentDelay will use the existing `delay` value which handles exponential backoff
+                }
+
+                if (shouldRetry && attempt < maxRetries) {
+                    console.log(`Retrying in ${currentDelay / 1000}s...`);
+                    await new Promise(resolve => setTimeout(resolve, currentDelay)); // Use currentDelay
+                    if (response.status !== 429) { 
+                        delay *= 2; // Apply exponential backoff for next non-429 retryable error
+                    }
+                    continue;
+                } else if (shouldRetry && attempt >= maxRetries) {
+                    console.error(`Max retries reached for status ${response.status}.`);
+                    return null; 
+                } else {
+                    // Don't retry for other client-side errors like 400, 401, 403
+                    console.error(`Not retrying for status ${response.status}.`);
+                    return null; 
+                }
+            }
+        } catch (error: any) {
+            console.error(`Error during fetch to Groq API (attempt ${attempt}/${maxRetries}):`, error.name, error.message);
+            if (attempt < maxRetries) {
+                console.log(`Retrying in ${delay / 1000}s...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                delay *= 2;
+            }
+        }
+    }
+    console.error(`Failed to get valid response from Groq API for model ${model} after ${maxRetries} attempts.`);
+    return null;
+}
+
+export async function callLLMForApiAnswers(
+    questions: { id: string; label: string; type: string; options?: string[]; isMandatory: boolean }[],
+    profileData: Record<string, string>,
+    eventName: string,
+    config: Record<string, string>
+): Promise<(string | string[] | boolean | null)[] | null> {
+    console.log(`\n--- LLM Call for API Answers (Groq API) - Event: ${eventName} ---`);
+    if (questions.length === 0) {
+        console.log("No questions to send to LLM for API answers.");
+        return [];
+    }
+
+    const groqApiKey = config.GROQ_API_KEY;
+    if (!groqApiKey) {
+        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
+        return null;
+    }
+
+    const profileString = JSON.stringify(profileData);
+    const questionsString = questions.map((q, index) => 
+        `${index + 1}. Label: "${q.label}", Type: ${q.type}${q.options ? `, Options: [${q.options.map(o => `"${o}"`).join(', ')}]` : ''}, Mandatory: ${q.isMandatory}`
+    ).join('\n');
+
+    const systemPrompt = `You are an AI assistant that provides answers for event registration forms. Based on the user\'s profile and the questions provided, your task is to generate a JSON array of answers. \nIt is CRITICAL that each element in the array directly corresponds to a question in the exact order they are listed, and the total number of answers in the array MUST precisely match the total number of questions.\n\nKey Instructions:\n1.  Output Format: Return ONLY a single, valid JSON array. Do NOT include any other text, explanations, apologies, or markdown formatting (like \\\`\\\`\\\`json) outside of this JSON array. Your entire response must start with \'[\' and end with \']\'.\n2.  Answer Array Length: The JSON array of answers MUST contain exactly the same number of elements as there are questions. For example, if there are 5 questions, your JSON array must contain 5 answers.\n3.  Answer Types:\n    *   For text/input fields (e.g., \'text\', \'linkedin\', \'phone-number\'): Provide the answer as a string.\n    *   For dropdown/select fields: Provide the selected option as a string. Choose strictly from the provided options. If no option is a perfect match, select the closest one.\n    *   For multi-select fields: Provide a JSON array of selected option strings. Choose strictly from the provided options. If no options are suitable, provide an empty array [].\n    *   For boolean/checkbox fields (e.g., \'agree-check\', \'terms\'): Respond with a boolean value (true or false).\n4.  Mandatory vs. Optional Fields:\n    *   For *Mandatory* questions (marked as Mandatory): You MUST provide a best-effort answer. Do NOT use null. If the profile lacks information for a mandatory text field, use \"N/A\". For mandatory select/dropdowns, pick the most suitable or first option. For mandatory agree-check/terms, respond with true.\n    *   For *Non-Mandatory* (optional) questions: If the profile does not contain enough information, and you cannot infer a reasonable answer, return null (the literal JSON null, not the string \"null\") for that question\'s array element. For optional multi-select with no info, use an empty array [].\n\nUser Profile:\n${profileString}\n\nEvent Name: ${eventName}\n\nQuestions (Total: ${questions.length}):\n${questionsString}\n\nReminder: Your response MUST be a JSON array with exactly ${questions.length} elements, corresponding to the questions above, in order.\nExample for 3 questions (text, multi-select from options, mandatory agree-check):\n[\"My text answer\", [\"Option A\", \"Option C\"], true]\nExample for 2 questions (optional dropdown with no info, mandatory text with no profile info):\n[null, \"Attending\"]`;
+
+    const messages = [{ role: 'system', content: systemPrompt }];
+
+    console.log("Sending sequential prompt to Groq LLM (llama-3.1-8b-instant for API answers)... (Max Retries: 3)"); // Retries handled by callGroqAPIWithRetries
+
+    const response = await callGroqAPIWithRetries(
+        messages, 
+        groqApiKey, 
+        config.GROQ_API_MODEL_SEQ_ANSWERS || 'llama-3.1-8b-instant', 
+        0.1 // Temperature
+        // maxRetries and initialDelay will use default values from callGroqAPIWithRetries definition
+    );
+
+    if (!response || !response.choices || response.choices.length === 0) {
+        console.error("Groq API Sequential Answer call failed or returned no choices.");
+        return null;
+    }
+
+    const content = response.choices[0]?.message?.content?.trim();
+
+    if (content) {
+        console.log("Groq API Sequential Answer Response Content (Raw):", content);
+        let parsedJson: any = null;
+        const errorLogs: string[] = [];
+        let attemptedJsonString: string = "";
+
+        // Attempt 1: Parse the whole content as is
+        try {
+            attemptedJsonString = content;
+            parsedJson = JSON.parse(attemptedJsonString);
+            console.log("Successfully parsed entire raw content as JSON array.");
+        } catch (e1: any) {
+            errorLogs.push(`Attempt 1 (parsing full content) failed: ${e1.message}`);
+            
+            // Attempt 2: Look for markdown ```json ... ``` block
+            const markdownMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+            if (markdownMatch && markdownMatch[1]) {
+                attemptedJsonString = markdownMatch[1].trim();
+                console.log("Extracted JSON string from markdown block:", attemptedJsonString);
+                try {
+                    parsedJson = JSON.parse(attemptedJsonString);
+                    console.log("Successfully parsed JSON from markdown block.");
+                } catch (e2: any) {
+                    errorLogs.push(`Attempt 2 (parsing markdown content) failed: ${e2.message}`);
+                }
+            } else {
+                 errorLogs.push("Attempt 2 (markdown block) skipped: No markdown block found.");
+            }
+
+            // Attempt 3: Fallback to existing regex for a simple array (if still not parsed)
+            if (!parsedJson) {
+                // Regex to find the first standalone JSON array.
+                // It looks for '[' not preceded by a quote (to avoid matching arrays inside strings),
+                // and matches until the corresponding ']'
+                const simpleArrayMatch = content.match(/(?<!")(\[[\s\S]*?\])(?!")/); 
+                if (simpleArrayMatch && simpleArrayMatch[1]) {
+                    attemptedJsonString = simpleArrayMatch[1].trim();
+                    console.log("Extracted JSON array string using simple regex:", attemptedJsonString);
+                    try {
+                        parsedJson = JSON.parse(attemptedJsonString);
+                        console.log("Successfully parsed JSON from simple array regex match.");
+                    } catch (e3: any) {
+                        errorLogs.push(`Attempt 3 (parsing simple regex content) failed: ${e3.message}`);
+                    }
+                } else {
+                    errorLogs.push("Attempt 3 (simple regex) skipped: No simple array match found (or regex issue).");
+                }
+            }
+        }
+
+        if (parsedJson && Array.isArray(parsedJson)) {
+            return parsedJson as (string | string[] | boolean | null)[];
+        } else {
+            console.error("Failed to parse content into a JSON array after all attempts.");
+            errorLogs.forEach(log => console.error(`  - ${log}`));
+            if (parsedJson && !Array.isArray(parsedJson)) {
+                 console.error("  - Parsed content was valid JSON but not an array:", JSON.stringify(parsedJson).substring(0, 200));
+            }
+            // Log the string that was last attempted for parsing if all attempts failed and it's different from raw content
+            if (attemptedJsonString !== content && errorLogs.length > 0 && !parsedJson) {
+                 console.error("  - Last string attempted for parsing:", attemptedJsonString.substring(0, 500));
+            }
+            return null; 
+        }
+    } else {
+        console.error("Groq API Sequential Answer response content is empty.");
+        return null;
+    }
 } 
