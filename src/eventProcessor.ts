@@ -2,68 +2,55 @@ import { Page, BrowserContext } from 'playwright';
 import { readProfile } from './config'; // Import readProfile from config.ts
 import { chooseBestFreeTicketLLM, callLLMBatched, LLMFieldRequest } from './llm'; // Adjust LLM imports
 import { handleModal } from './modalHandler';
-import { findFieldByLabel } from './domUtils'; // Add missing import
-import * as fs from 'fs/promises'; // Import fs
+// import * as fs from 'fs/promises'; // Comment out if fs is no longer used elsewhere
 
 // Define selectors used in this module
 const ticketSectionSelector = '.ticket-section';
 const ticketPriceSelector = '.ticket-price, .price-tag';
 const ticketRegisterButtonSelector = 'button:has-text("Register"), button:has-text("Get Ticket")';
-const primaryButtonSelector = 'button.btn.luma-button.primary.solid.full-width';
-const askToJoinText = ["Demander à rejoindre", "Ask to Join"];
-const waitlistText = ["Rejoindre la liste d'attente", "Join Waitlist"];
-const oneClickText = ["Inscription en un clic"];
 // Redefined as an array of status texts
 const pendingStatusTexts = [
     "Pending Approval", 
-    "You're In", 
-    "You're In",
+    "You’re In",
     "You are registered",
     "On the waitlist"
 ]; 
 const statusDivSelector = 'div.title.mt-2.fw-medium'; // Selector for the element containing the status text
-const registrationLogFile = 'registrations.txt'; // Define log file name
 const modalSelector = 'div.lux-overlay.glass'; // Define main modal selector locally
-const checkboxContainerSelector = '.lux-checkbox'; // Define checkbox container selector
-const checkboxInputSelector = 'input[type="checkbox"]'; 
-const checkboxLabelSelector = 'label.text-label > div'; 
-const checkboxClickTargetSelector = 'label.checkbox-icon';
 
-// Define custom select selectors (previously missing)
-const customSelectDropdownSelector = 'div.lux-menu'; 
-const customSelectOptionSelector = 'div.lux-menu-item'; 
-
-// Add selectors for the Terms Modal
-const termsModalSelector = 'div.lux-modal:has-text("Accept Terms")';
-const termsModalTextareaSelector = 'textarea.lux-naked-input';
-const termsModalSubmitButtonSelector = 'button:has-text("Sign & Accept")';
-
-// Function to append log entry
-async function logRegistration(entry: string): Promise<void> {
-    try {
-        await fs.appendFile(registrationLogFile, entry + '\n', 'utf8');
-    } catch (err) {
-        console.error(`\x1b[31mError writing to ${registrationLogFile}:\x1b[0m`, err);
-    }
+// --- Helper Function to Click "Register" or "Apply" and handle LLM --- 
+async function clickRegisterOrApplyAndProcess(page: Page, context: BrowserContext, config: Record<string, string>, profileData: Record<string, string>): Promise<boolean> {
+    let registrationSuccessful = false; // Declare and initialize
+    console.log('Interaction complete. Returning registration success status.');
+    return registrationSuccessful; // Ensure this reflects the outcome
 }
 
+// --- Main Event Processing Function --- 
 export async function processEventPage(
     page: Page, 
     context: BrowserContext, 
-    link: string, 
+    eventUrl: string, 
     config: Record<string, string>
 ): Promise<boolean> {
-    console.log(`\n--- Processing event: ${link} ---`);
-    const eventPage = await context.newPage();
-    let processedSuccessfully = false;
-    let eventStatus = 'Skipped'; // Default status
-    let chosenTicket = 'N/A'; // Default ticket
-    let modalData: Record<string, string | string[] | null> | null = null; // To store modal results
-    const fieldsToAskLLM: LLMFieldRequest[] = []; // Declare earlier
+    let overallSuccess = false;
+    const profileData = await readProfile(); // Load profile data once
+    if (Object.keys(profileData).length === 0) {
+        console.warn('Profile data is empty. LLM calls may be impaired.');
+    }
+
+    // Keep track of the new page opened for this event
+    let eventPage: Page | null = null; 
 
     try {
-        console.log(`Navigating to ${link}`);
-        await eventPage.goto(link, { waitUntil: 'networkidle', timeout: 20000 });
+        console.log(`  Navigating to event page: ${eventUrl}`);
+        eventPage = await context.newPage();
+        await eventPage.goto(eventUrl, { waitUntil: 'load', timeout: 60000 }); // Changed to waitUntil: 'load'        
+       
+        let processedSuccessfully = false;
+        let eventStatus = 'Skipped'; // Default status
+        let chosenTicket = 'N/A'; // Declare chosenTicket here
+        let modalData: Record<string, string | string[] | null> | null = null; // To store modal results
+
         console.log(`Page loaded. Checking current registration status...`);
 
         // --- Initial Status Check (Simplified) --- 
@@ -148,9 +135,7 @@ export async function processEventPage(
                     chosenTicketName = freeTicketOptions[0].name;
                     console.log(`Only one free ticket option ("${chosenTicketName}"), selecting it.`);
                 } else {
-                    const optionNames = freeTicketOptions.map(opt => opt.name);
-                    const currentProfile = await readProfile(); // Need profile for ticket choice
-                    chosenTicketName = await chooseBestFreeTicketLLM(optionNames, currentProfile, config);
+                    chosenTicketName = await chooseBestFreeTicketLLM(freeTicketOptions.map(opt => opt.name), profileData, config);
                 }
 
                 if (chosenTicketName) {
@@ -277,26 +262,16 @@ export async function processEventPage(
             processedSuccessfully = true;
         }
 
+        overallSuccess = processedSuccessfully;
+        console.log(`  Registration attempt for ${eventUrl} completed. Success: ${overallSuccess}`);
     } catch (error) {
-        console.error('\x1b[31mError processing event page:\x1b[0m', error);
-        eventStatus = `Error (${error instanceof Error ? error.message : String(error)})`;
-        processedSuccessfully = false;
+        console.error(`\x1b[31m  Error processing event ${eventUrl}:\x1b[0m`, error);
+        overallSuccess = false;
     } finally {
-        console.log(`--- Finished processing ${link} ---`);
-        // Log the result to the file
-        const logEntry = JSON.stringify({ 
-            timestamp: new Date().toISOString(),
-            eventLink: link,
-            status: eventStatus,
-            chosenTicket: chosenTicket,
-            modalData: modalData 
-        });
-        await logRegistration(logEntry);
-
+        console.log(`--- Finished processing ${eventUrl} ---`);
         if (eventPage && !eventPage.isClosed()) {
             await eventPage.close();
         }
-    }
-    
-    return processedSuccessfully;
+    } 
+    return overallSuccess;
 }
