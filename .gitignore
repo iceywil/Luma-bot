@@ -1,2 +1,3 @@
 /node_modules
 /playwright_chrome_profile
+/src/playwright_chrome_profile
