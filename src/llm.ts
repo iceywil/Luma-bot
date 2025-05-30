@@ -47,7 +47,7 @@ export async function chooseBestFreeTicketLLM(
 
     console.log(`Profile Data (for context): ${profileString}`);
     console.log(`Free Ticket Options: [${optionsString}]`);
-    console.log(`Sending prompt to Groq LLM (llama-3.1-8b-instant for ticket choice)...`);
+    console.log(`Sending prompt to Groq LLM (${config.GROQ_API_MODEL || 'llama-3.3-70b-versatile'} for ticket choice)...`);
 
     try {
         const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -57,7 +57,7 @@ export async function chooseBestFreeTicketLLM(
                 "Authorization": `Bearer ${groqApiKey}`
             },
             body: JSON.stringify({
-                "model": "llama-3.1-8b-instant",
+                "model": config.GROQ_API_MODEL || "llama-3.3-70b-versatile",
                 "messages": [{ "role": "user", "content": systemMessage }],
                 "stream": false
                 // "temperature": 0.7, // Optional: Adjust temperature as needed
@@ -151,7 +151,7 @@ export async function callLLMBatched(
     let currentAttempt = 0;
     let baseDelay = 2000; // Start with 2 seconds
 
-    console.log(`Sending prompt to Groq LLM (llama-3.1-8b-instant)... (Max Retries: ${maxRetries})`);
+    console.log(`Sending prompt to Groq LLM (${config.GROQ_API_MODEL || 'llama-3.1-8b-instant'})... (Max Retries: ${maxRetries})`);
 
     while (currentAttempt < maxRetries) {
         currentAttempt++;
@@ -164,7 +164,7 @@ export async function callLLMBatched(
                     "Authorization": `Bearer ${groqApiKey}`
                 },
                 body: JSON.stringify({
-                    "model": "llama-3.1-8b-instant",
+                    "model": config.GROQ_API_MODEL || "llama-3.1-8b-instant",
                     "messages": [{ "role": "user", "content": prompt }],
                     "stream": false,
                     // "temperature": 0.2, // Lower temperature for more deterministic JSON output
@@ -272,7 +272,7 @@ export async function callLLMBatched(
             }
         } catch (error: any) {
             console.error(`  Error during fetch to Groq API (Attempt ${currentAttempt}):\x1b[0m`, error.name, error.message);
-            if (error.name === 'AbortSignalError') { // Specific handling for timeout
+            if (error.name === 'AbortSignalError') { // Specifically handle timeout
                 console.warn(`  Groq API call timed out after ${90000 / 1000} seconds (Attempt ${currentAttempt}).`);
             }
             if (currentAttempt >= maxRetries) {
@@ -402,7 +402,7 @@ export async function callLLMForApiAnswers(
 
     const messages = [{ role: 'system', content: systemPrompt }];
 
-    console.log("Sending sequential prompt to Groq LLM (llama-3.1-8b-instant for API answers)... (Max Retries: 3)"); // Retries handled by callGroqAPIWithRetries
+    console.log("Sending sequential prompt to Groq LLM (" + (config.GROQ_API_MODEL_SEQ_ANSWERS || config.GROQ_API_MODEL || 'llama-3.1-8b-instant') + " for API answers)... (Max Retries: 3)"); // Retries handled by callGroqAPIWithRetries
 
     const response = await callGroqAPIWithRetries(
         messages, 
