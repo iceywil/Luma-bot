@@ -255,21 +255,26 @@ export async function submitRegistration(payload: any, cookieString: string | nu
     // console.log('Payload:', JSON.stringify(payload, null, 2)); 
     console.log('Submitting payload for event_api_id:', payload.event_api_id);
 
+    // Add random delay before submission to appear more human (3-7 seconds)
+    const preDelay = Math.floor(Math.random() * 4000) + 3000;
+    console.log(`  Adding human-like delay before submission: ${preDelay}ms`);
+    await new Promise(resolve => setTimeout(resolve, preDelay));
+
     const headers: Record<string, string> = {
         'authority': 'api.lu.ma',
         'accept': 'application/json, text/plain, */*',
-        'accept-language': 'en', // Can be made more dynamic if needed
+        'accept-language': 'en-US,en;q=0.9,fr;q=0.8',
         'content-type': 'application/json',
         'origin': 'https://lu.ma',
         'priority': 'u=1, i',
         'referer': eventPageUrl, // Dynamic referer based on the event page
-        'sec-ch-ua': 'Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"', // Example, might need updates
+        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"', // Example, adjust if running on different OS
+        'sec-ch-ua-platform': '"macOS"',
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Example
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'x-luma-client-type': 'luma-web',
         'x-luma-client-version': '01257ddc7a46f92dac90e52edd0d36ce618136e2', // Static for now, might need to be dynamic
         'x-luma-web-url': eventPageUrl // Dynamic based on the event page being registered for
@@ -282,9 +287,18 @@ export async function submitRegistration(payload: any, cookieString: string | nu
     }
 
     try {
-        const response = await axios.post(apiUrl, payload, { headers });
+        const response = await axios.post(apiUrl, payload, { 
+            headers,
+            timeout: 30000 // 30 second timeout
+        });
         console.log('Registration API response status:', response.status);
         console.log('Registration API response data:', response.data);
+        
+        // Add delay after successful submission
+        const postDelay = Math.floor(Math.random() * 2000) + 1000;
+        console.log(`  Adding post-submission delay: ${postDelay}ms`);
+        await new Promise(resolve => setTimeout(resolve, postDelay));
+        
         return response.data;
     } catch (error: any) {
         console.error('Error submitting registration:');
@@ -292,6 +306,21 @@ export async function submitRegistration(payload: any, cookieString: string | nu
             console.error('Status:', error.response.status);
             console.error('Data:', error.response.data);
             console.error('Headers:', error.response.headers);
+            
+            // If we get a bot detection error, add longer delay before next attempt
+            if (error.response.status === 444 || error.response.status === 429) {
+                if (error.response.status === 444) {
+                    // Bot detection - wait 1 minute
+                    const botDelay = 60000; // 1 minute
+                    console.warn(`  Bot detection confirmed (status 444). Waiting 1 minute: ${botDelay}ms`);
+                    await new Promise(resolve => setTimeout(resolve, botDelay));
+                } else {
+                    // Rate limiting - shorter delay
+                    const rateDelay = Math.floor(Math.random() * 10000) + 15000; // 15-25 seconds
+                    console.warn(`  Rate limiting detected (status 429). Adding delay: ${rateDelay}ms`);
+                    await new Promise(resolve => setTimeout(resolve, rateDelay));
+                }
+            }
         } else if (error.request) {
             console.error('Request (no response received):', error.request);
         } else {

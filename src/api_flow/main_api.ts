@@ -103,47 +103,114 @@ async function fetchAllEventEntriesFromCalendarApi(
 ): Promise<LumaCalendarEntry[]> {
     let allEntries: LumaCalendarEntry[] = [];
     let cursor: string | undefined = undefined;
-    const paginationLimit = 50; // Luma's default seems to be 20, can be increased
+    const paginationLimit = 20; // Use 20 as requested
+    const maxPages = 50; // Safety limit to prevent infinite loops
+    let pageCount = 0;
+    const seenCursors = new Set<string>(); // Track cursors to detect loops
+    const seenEventIds = new Set<string>(); // Track event IDs to detect duplicate events
 
     console.log(`Fetching all event entries from Luma calendar API (ID: ${calendarApiId})...`);
 
     try {
         do {
+            pageCount++;
+            
+            // Safety check: maximum pages
+            if (pageCount > maxPages) {
+                console.warn(`  Reached maximum page limit (${maxPages}). Stopping pagination to prevent infinite loop.`);
+                break;
+            }
+
             const params: Record<string, string | number> = {
                 calendar_api_id: calendarApiId,
-                period: 'future', // Or 'all', 'past'
+                period: 'future',
                 pagination_limit: paginationLimit,
             };
             if (cursor) {
-                params.cursor = cursor;
+                // Check for repeated cursor (infinite loop detection)
+                if (seenCursors.has(cursor)) {
+                    console.warn(`  Detected repeated cursor: ${cursor}. This indicates an API bug. Stopping pagination.`);
+                    break;
+                }
+                seenCursors.add(cursor);
+                params.pagination_cursor = cursor; // Use correct parameter name
             }
 
             const apiUrl = 'https://api.lu.ma/calendar/get-items';
-            console.log(`  Fetching page: ${apiUrl} with params: ${JSON.stringify(params)}`);
+            console.log(`  Fetching page ${pageCount}: ${apiUrl} with params: ${JSON.stringify(params)}`);
             
             const headers: Record<string, string> = {
                 'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Referer': 'https://lu.ma/ethcc',
+                'Origin': 'https://lu.ma',
+                'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"macOS"',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
             };
             if (cookieString) {
                 headers['cookie'] = cookieString;
             }
 
+            // Add random delay between 1-3 seconds to appear more human
+            const delay = Math.floor(Math.random() * 2000) + 1000;
+            console.log(`  Adding human-like delay: ${delay}ms`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+
             const response = await axios.get<LumaCalendarApiResponse>(apiUrl, { params, headers });
             
             if (response.data && response.data.entries) {
-                allEntries = allEntries.concat(response.data.entries);
+                // Check for duplicate events (another sign of API bug)
+                const newEvents = response.data.entries.filter(entry => !seenEventIds.has(entry.event.api_id));
+                const duplicateCount = response.data.entries.length - newEvents.length;
+                
+                if (duplicateCount > 0) {
+                    console.warn(`  Warning: ${duplicateCount} duplicate events detected in this page. API may be buggy.`);
+                }
+                
+                if (newEvents.length === 0 && pageCount > 1) {
+                    console.warn(`  All events in this page are duplicates. Stopping pagination.`);
+                    break;
+                }
+                
+                // Add new events to our collection and tracking
+                allEntries = allEntries.concat(newEvents);
+                newEvents.forEach(entry => seenEventIds.add(entry.event.api_id));
+                
                 cursor = response.data.has_more ? response.data.next_cursor : undefined;
-                console.log(`  Fetched ${response.data.entries.length} entries. Total: ${allEntries.length}. Has more: ${!!cursor}`);
+                console.log(`  Fetched ${response.data.entries.length} entries (${newEvents.length} new, ${duplicateCount} duplicates). Total unique: ${allEntries.length}. Has more: ${response.data.has_more}`);
+                
+                // Print details of each NEW entry for debugging
+                if (newEvents.length > 0) {
+                    console.log('  New entry details:');
+                    newEvents.forEach((entry, index) => {
+                        console.log(`    [${index + 1}] Event: "${entry.event.name}" | API ID: ${entry.event.api_id} | URL: ${entry.event.url} | Status: ${entry.status || 'N/A'} | Role Approval: ${entry.role?.approval_status || 'N/A'}`);
+                    });
+                }
+                
+                // Print pagination info
+                console.log(`  Pagination: has_more=${response.data.has_more}, next_cursor=${response.data.next_cursor || 'none'}`);
+                
+                // Additional safety check: if has_more is true but no next_cursor provided
+                if (response.data.has_more && !cursor) {
+                    console.warn("  API indicates has_more=true but no next_cursor provided. Stopping pagination.");
+                    break;
+                }
             } else {
                 console.warn('  No entries found in API response or malformed response.');
                 cursor = undefined; // Stop pagination
             }
         } while (cursor);
 
-        console.log(`Finished fetching. Total ${allEntries.length} event entries found.`);
+        console.log(`Finished fetching after ${pageCount} pages. Total ${allEntries.length} unique event entries found.`);
         return allEntries;
     } catch (error: any) {
-        console.error(`Error fetching event entries from Luma API for calendar ${calendarApiId}:`);
+        console.error(`Error fetching event entries from Luma API for calendar ${calendarApiId} (stopped at page ${pageCount}):`);
         if (error.response) {
             console.error('  Status:', error.response.status);
             console.error('  Data:', JSON.stringify(error.response.data).substring(0, 300));
@@ -152,7 +219,7 @@ async function fetchAllEventEntriesFromCalendarApi(
         } else {
             console.error('  Error message:', error.message);
         }
-        return []; // Return empty array on error
+        return allEntries; // Return what we have so far instead of empty array
     }
 }
 // --- End New Helper Function ---
@@ -347,6 +414,11 @@ async function mainApiFlow() {
                 successfulRegistrations.push(`${eventUrl} (Skipped, role approval: ${entry.role.approval_status})`);
                 continue;
             }
+            
+            // Add random delay between processing events (2-5 seconds)
+            const eventDelay = Math.floor(Math.random() * 3000) + 2000;
+            console.log(`  Adding delay between events: ${eventDelay}ms`);
+            await new Promise(resolve => setTimeout(resolve, eventDelay));
             
             let success = false;
             try {
