@@ -240,35 +240,43 @@ async function fetchAllEventEntriesFromCalendarApi(
 // --- End New Helper Function ---
 
 // --- New Helper Function to Extract Calendar API ID from Page ---
-async function getCalendarApiIdFromPage(
-    page: Page,
-    calendarUrl: string
+async function getCalendarApiId(
+    calendarUrl: string,
+    cookieString: string | null
 ): Promise<string | null> {
-    console.log(`Attempting to extract calendar_api_id from: ${calendarUrl}`);
+    console.log(`Attempting to extract calendar_api_id from: ${calendarUrl} via HTTP`);
     try {
-        await page.goto(calendarUrl, {
-            waitUntil: "networkidle",
-            timeout: 60000,
-        });
-        console.log(`  Navigated to ${calendarUrl}.`);
+        const headers: { [key: string]: string } = {
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
+            "User-Agent":
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        };
+        if (cookieString) {
+            headers["cookie"] = cookieString;
+        }
 
-        // 1. Try to get it from the apple-itunes-app meta tag
+        const response = await axios.get<string>(calendarUrl, { headers });
+        const pageContent = response.data;
+        console.log(
+            `  Successfully fetched page content (length: ${pageContent.length}).`
+        );
+
+        // 1. Try to get it from the apple-itunes-app meta tag (using regex)
         console.log("  Looking for apple-itunes-app meta tag...");
-        const appleMetaTag = await page
-            .locator('meta[name="apple-itunes-app"]')
-            .first();
-        if (await appleMetaTag.count()) {
-            const content = await appleMetaTag.getAttribute("content");
-            if (content) {
-                const match = content.match(
-                    /luma:\/\/calendar\/(cal-[a-zA-Z0-9]+)/
+        const metaTagRegex =
+            /<meta[^>]*name="apple-itunes-app"[^>]*content="([^"]*)"/;
+        const metaMatch = pageContent.match(metaTagRegex);
+        if (metaMatch && metaMatch[1]) {
+            const content = metaMatch[1];
+            const match = content.match(
+                /luma:\/\/calendar\/(cal-[a-zA-Z0-9]+)/
+            );
+            if (match && match[1]) {
+                console.log(
+                    `  Extracted calendar_api_id from apple-itunes-app meta tag: ${match[1]}`
                 );
-                if (match && match[1]) {
-                    console.log(
-                        `  Extracted calendar_api_id from apple-itunes-app meta tag: ${match[1]}`
-                    );
-                    return match[1];
-                }
+                return match[1];
             }
         }
         console.log(
@@ -277,56 +285,49 @@ async function getCalendarApiIdFromPage(
 
         // 2. Try __NEXT_DATA__ as a fallback
         console.log("  Looking for __NEXT_DATA__ as fallback...");
-        const nextDataElement = await page
-            .locator('script#__NEXT_DATA__[type="application/json"]')
-            .first();
-        if (await nextDataElement.count()) {
-            const nextDataJson = await nextDataElement.textContent();
-            if (nextDataJson) {
-                try {
-                    const jsonData = JSON.parse(nextDataJson);
-                    // Common paths for calendar_api_id - these are guesses and might need adjustment
-                    const calId =
-                        jsonData.props?.pageProps?.calendar?.api_id ||
-                        jsonData.props?.pageProps?.calendar_api_id ||
-                        jsonData.props?.pageProps?.bootstrapApiResponse
-                            ?.calendar?.api_id ||
-                        jsonData.props?.pageProps?.bootstrapData
-                            ?.calendar_api_id; // Another common pattern
+        const nextDataRegex =
+            /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/;
+        const nextDataMatch = pageContent.match(nextDataRegex);
+        if (nextDataMatch && nextDataMatch[1]) {
+            try {
+                const jsonData = JSON.parse(nextDataMatch[1]);
+                const calId =
+                    jsonData.props?.pageProps?.calendar?.api_id ||
+                    jsonData.props?.pageProps?.calendar_api_id ||
+                    jsonData.props?.pageProps?.bootstrapApiResponse?.calendar
+                        ?.api_id ||
+                    jsonData.props?.pageProps?.bootstrapData
+                        ?.calendar_api_id;
 
-                    if (
-                        calId &&
-                        typeof calId === "string" &&
-                        calId.startsWith("cal-")
-                    ) {
-                        console.log(
-                            `  Extracted calendar_api_id from __NEXT_DATA__: ${calId}`
-                        );
-                        return calId;
-                    }
+                if (
+                    calId &&
+                    typeof calId === "string" &&
+                    calId.startsWith("cal-")
+                ) {
                     console.log(
-                        "  Could not find calendar_api_id in __NEXT_DATA__ at common paths."
+                        `  Extracted calendar_api_id from __NEXT_DATA__: ${calId}`
                     );
-                    // console.log('__NEXT_DATA__ content:', JSON.stringify(jsonData, null, 2).substring(0, 1000)); // For debugging
-                } catch (e) {
-                    console.warn(
-                        "  Failed to parse __NEXT_DATA__ JSON for calendar_api_id.",
-                        e
-                    );
+                    return calId;
                 }
+                console.log(
+                    "  Could not find calendar_api_id in __NEXT_DATA__ at common paths."
+                );
+            } catch (e) {
+                console.warn(
+                    "  Failed to parse __NEXT_DATA__ JSON for calendar_api_id.",
+                    e
+                );
             }
         } else {
             console.log("  __NEXT_DATA__ script tag not found.");
         }
 
         // Fallback: Try to find it in the HTML content if not in __NEXT_DATA__
-        // This is less reliable and more prone to breakage
         console.log(
             "  Attempting fallback regex search for calendar_api_id in HTML content..."
         );
-        const pageContent = await page.content();
         const regex = /"calendar_api_id"\s*:\s*"(cal-[a-zA-Z0-9]+)"/;
-        const htmlMatch = pageContent.match(regex); // Renamed to avoid conflict with earlier 'match'
+        const htmlMatch = pageContent.match(regex);
         if (htmlMatch && htmlMatch[1]) {
             console.log(
                 `  Extracted calendar_api_id using general HTML fallback regex: ${htmlMatch[1]}`
@@ -340,7 +341,7 @@ async function getCalendarApiIdFromPage(
         return null;
     } catch (error) {
         console.error(
-            `  Error navigating to or processing calendar page ${calendarUrl} for API ID:`,
+            `  Error fetching or processing calendar page ${calendarUrl} for API ID:`,
             error
         );
         return null;
@@ -447,20 +448,21 @@ async function mainApiFlow() {
             }
         }
 
-        // Get Calendar API ID from the URL using Playwright page
-        const calendarApiId = await getCalendarApiIdFromPage(
-            page,
-            eventCalendarUrl
+        // We have the cookies, we can close the browser now.
+        console.log("Closing browser as cookies are extracted...");
+        await context.close();
+        console.log("Browser closed.");
+
+        // Get Calendar API ID from the URL using HTTP request with cookies
+        const calendarApiId = await getCalendarApiId(
+            eventCalendarUrl,
+            cookieString
         );
 
         if (!calendarApiId) {
             console.error(
                 `Failed to retrieve calendar_api_id from ${eventCalendarUrl}. Exiting.`
             );
-            if (!context.browser()?.browserType().name().includes("headless")) {
-                await page.waitForTimeout(10000);
-            }
-            await context.close();
             return;
         }
         console.log(
@@ -474,10 +476,6 @@ async function mainApiFlow() {
 
         if (allEventEntries.length === 0) {
             console.log("No event entries found from the API. Exiting.");
-            if (!context.browser()?.browserType().name().includes("headless")) {
-                await page.waitForTimeout(10000);
-            }
-            await context.close();
             return;
         }
         console.log(
@@ -700,9 +698,8 @@ async function mainApiFlow() {
             error
         );
     } finally {
-        console.log("Closing browser...");
-        if (context && context.close) await context.close();
-        console.log("Browser closed.");
+        // Browser is already closed - no cleanup needed
+        console.log("API flow completed.");
     }
 }
 

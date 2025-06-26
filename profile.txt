@@ -7,6 +7,7 @@ Github: iceywil
 Telegram : iceywil
 Twitter : iceywil_
 x.com : iceywil_
+linkedin : https://www.linkedin.com/in/example-user/
 Location: Paris, France
 Name: Example User
 Type: Founder, Technical Founder, Investor
