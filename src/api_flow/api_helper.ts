@@ -100,7 +100,7 @@ export async function getEventApiIdFromUrl(eventPageUrl: string): Promise<string
  * Fetches detailed event information from Luma's API.
  */
 export async function fetchEventDetails(eventApiId: string): Promise<APIEventDetails | null> {
-    const apiUrl = `https://api.lu.ma/event/get?event_api_id=${eventApiId}`;
+    const apiUrl = `https://api.luma.com/event/get?event_api_id=${eventApiId}`;
     console.log(`Fetching event details from: ${apiUrl}`);
     try {
         const response = await axios.get<APIEventDetails>(apiUrl, {
@@ -249,7 +249,7 @@ export async function prepareRegistrationAnswers(
  * Submits the event registration via API.
  */
 export async function submitRegistration(payload: any, cookieString: string | null, eventPageUrl: string): Promise<any | null> {
-    const apiUrl = 'https://api.lu.ma/event/independent/register';
+    const apiUrl = 'https://api.luma.com/event/independent/register';
     console.log(`Submitting registration to: ${apiUrl}`);
     // Avoid logging full payload if it's very large or contains sensitive repeated info from profile
     // console.log('Payload:', JSON.stringify(payload, null, 2)); 
@@ -261,11 +261,11 @@ export async function submitRegistration(payload: any, cookieString: string | nu
     await new Promise(resolve => setTimeout(resolve, preDelay));
 
     const headers: Record<string, string> = {
-        'authority': 'api.lu.ma',
+        'authority': 'api.luma.com',
         'accept': 'application/json, text/plain, */*',
         'accept-language': 'en-US,en;q=0.9,fr;q=0.8',
         'content-type': 'application/json',
-        'origin': 'https://lu.ma',
+        'origin': 'https://luma.com',
         'priority': 'u=1, i',
         'referer': eventPageUrl, // Dynamic referer based on the event page
         'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',

@@ -9,30 +9,44 @@ interface BrowserConfig {
 export function getBrowserConfig(browserType: string): BrowserConfig {
     const userDataDir = path.resolve(__dirname, "../playwright_chrome_profile");
 
-    const browserConfigs: Record<string, BrowserConfig> = {
-        chrome: {
-            executablePath:
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            userDataDir,
+    const paths: Record<string, Record<string, string>> = {
+        darwin: { // macOS
+            chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            brave: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            arc: "/Applications/Arc.app/Contents/MacOS/Arc",
         },
-        brave: {
-            executablePath:
-                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            userDataDir,
+        linux: {
+            chrome: "/usr/bin/google-chrome",
+            brave: "/usr/bin/brave-browser",
+            // Arc is not available on Linux, so we can leave it out or handle it
         },
-        arc: {
-            executablePath: "/Applications/Arc.app/Contents/MacOS/Arc",
-            userDataDir,
-        },
+        // You can add more platforms like 'win32' for Windows
     };
 
-    const config = browserConfigs[browserType.toLowerCase()];
-    if (!config) {
-        console.warn(
-            `Browser ${browserType} not found, falling back to Chrome`
-        );
-        return browserConfigs.chrome;
+    const platform = process.platform as keyof typeof paths;
+    const platformPaths = paths[platform];
+
+    if (!platformPaths) {
+        throw new Error(`Unsupported platform: ${platform}`);
     }
 
-    return config;
+    const browserKey = browserType.toLowerCase();
+    let executablePath = platformPaths[browserKey];
+
+    // Fallback to Chrome if the selected browser is not available on the current OS
+    if (!executablePath) {
+        console.warn(
+            `Browser ${browserType} not found on ${platform}, falling back to Chrome.`
+        );
+        executablePath = platformPaths.chrome;
+    }
+    
+    if (!executablePath) {
+        throw new Error(`Chrome browser is not configured for platform: ${platform}`);
+    }
+
+    return {
+        executablePath,
+        userDataDir,
+    };
 }
