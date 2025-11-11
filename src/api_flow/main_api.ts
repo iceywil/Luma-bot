@@ -146,7 +146,7 @@ async function fetchAllEventEntriesFromCalendarApi(
                 params.pagination_cursor = cursor; // Use correct parameter name
             }
 
-            const apiUrl = 'https://api.lu.ma/calendar/get-items';
+            const apiUrl = 'https://api.luma.com/calendar/get-items';
             console.log(`  Fetching page ${pageCount}: ${apiUrl} with params: ${JSON.stringify(params)}`);
             
             const headers: Record<string, string> = {
@@ -154,8 +154,8 @@ async function fetchAllEventEntriesFromCalendarApi(
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Referer': 'https://lu.ma/ethcc',
-                'Origin': 'https://lu.ma',
+                'Referer': 'https://luma.com/ethcc',
+                'Origin': 'https://luma.com',
                 'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
                 'Sec-Ch-Ua-Mobile': '?0',
                 'Sec-Ch-Ua-Platform': '"macOS"',
@@ -385,7 +385,7 @@ async function mainApiFlow() {
     const successfulRegistrations: string[] = [];
 
     try {
-        const loginUrl = "https://lu.ma/signin";
+        const loginUrl = "https://luma.com/signin";
         console.log(`Navigating to login page: ${loginUrl}...`);
         await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 60000 });
         console.log(
@@ -393,9 +393,9 @@ async function mainApiFlow() {
         );
 
         console.log(
-            "Waiting for redirection to https://lu.ma/home after login..."
+            "Waiting for redirection to https://luma.com/home after login..."
         );
-        const homeUrl = "https://lu.ma/home";
+        const homeUrl = "https://luma.com/home";
         const loginCheckTimeout = 180000;
         const checkInterval = 2000;
         let currentTime = 0;
@@ -484,7 +484,7 @@ async function mainApiFlow() {
 
         for (const entry of allEventEntries) {
             const eventSlug = entry.event.url;
-            const eventUrl = `https://lu.ma/${eventSlug}`;
+            const eventUrl = `https://luma.com/${eventSlug}`;
             const eventApiId = entry.event.api_id;
             const eventName = entry.event.name;
 
