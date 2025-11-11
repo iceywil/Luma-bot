@@ -1,6 +1,6 @@
-Company: 42Blockchain/Edging
-Company Website: www.edging.io
-Designation: CEO
+Company: Swissborg
+Company Website: www.swissborg.com
+Designation: Junior BD
 Email: redacted@example.com
 Name : Example User
 Github: iceywil
@@ -10,5 +10,6 @@ x.com : iceywil_
 linkedin : https://www.linkedin.com/in/example-user/
 Location: Paris, France
 Name: Example User
-Type: Founder, Technical Founder, Investor
+Type: Founder, Technical Founder, Investor, Business Developer, Software Engineer
 T-shirt Size : M
+Alergies : none
