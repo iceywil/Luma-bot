@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
-import { readConfig, readProfile } from './config'; // Adjusted path
+import { readConfig, readProfile } from '../api_flow/config'; // Adjusted path
 import { processEventPage } from './eventProcessor'; // Adjusted path
 import * as fs from 'fs/promises';
 import dotenv from 'dotenv';

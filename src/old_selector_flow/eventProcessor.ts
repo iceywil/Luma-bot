@@ -1,6 +1,6 @@
 import { Page, BrowserContext } from 'playwright';
-import { readProfile } from './config'; // Import readProfile from config.ts
-import { chooseBestFreeTicketLLM, callLLMBatched, LLMFieldRequest } from './llm'; // Adjust LLM imports
+import { readProfile } from '../api_flow/config'; // Import readProfile from config.ts
+import { chooseBestFreeTicketLLM, callLLMBatched, LLMFieldRequest } from '../api_flow/llm'; // Adjust LLM imports
 import { handleModal } from './modalHandler';
 // import * as fs from 'fs/promises'; // Comment out if fs is no longer used elsewhere
 

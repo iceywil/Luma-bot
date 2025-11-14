@@ -1,7 +1,7 @@
 import { chromium } from "playwright-extra";
 import stealth from "puppeteer-extra-plugin-stealth";
 import { Browser, Page, BrowserContext } from "playwright";
-import { readConfig, readProfile } from "../config";
+import { readConfig, readProfile } from "./config";
 import * as fs from "fs/promises";
 import dotenv from "dotenv";
 import path from "path";
@@ -15,7 +15,8 @@ import {
     APIEventDetails,
     APIRegistrationAnswer,
 } from "./api_helper";
-import { getBrowserConfig } from "../browserConfig";
+import { getBrowserConfig } from "./browserConfig";
+
 
 // Load environment variables from .env file
 dotenv.config({ path: path.resolve(__dirname, "../../.env") }); // Adjusted path for .env

@@ -1,6 +1,5 @@
 import axios from 'axios';
-import { readProfile, readConfig } from '../config'; // Adjusted path
-import { callLLMForApiAnswers } from '../llm'; // Import the new LLM function
+import { callLLMForApiAnswers } from './llm'; // Import the new LLM function
 
 // Types for API responses (can be refined based on actual Luma API docs if available)
 export interface APIRegistrationQuestion {
@@ -248,8 +247,8 @@ export async function prepareRegistrationAnswers(
 /**
  * Submits the event registration via API.
  */
-export async function submitRegistration(payload: any, cookieString: string | null, eventPageUrl: string): Promise<any | null> {
-    const apiUrl = 'https://api.luma.com/event/independent/register';
+export async function submitRegistration(payload: any, cookieString: string | null, eventPageUrl: string, headersOverride?: Record<string,string>): Promise<any | null> {
+    const apiUrl = 'https://api2.luma.com/event/register';
     console.log(`Submitting registration to: ${apiUrl}`);
     // Avoid logging full payload if it's very large or contains sensitive repeated info from profile
     // console.log('Payload:', JSON.stringify(payload, null, 2)); 
@@ -261,33 +260,63 @@ export async function submitRegistration(payload: any, cookieString: string | nu
     await new Promise(resolve => setTimeout(resolve, preDelay));
 
     const headers: Record<string, string> = {
-        'authority': 'api.luma.com',
-        'accept': 'application/json, text/plain, */*',
-        'accept-language': 'en-US,en;q=0.9,fr;q=0.8',
+        'authority': 'api2.luma.com',
+        'accept': '*/*',
+        'accept-encoding': 'gzip, deflate, br, zstd',
+        'accept-language': 'en',
         'content-type': 'application/json',
         'origin': 'https://luma.com',
         'priority': 'u=1, i',
         'referer': eventPageUrl, // Dynamic referer based on the event page
-        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        // Include non-pseudo equivalents for HTTP/2 pseudo-headers. Note: true pseudo-headers
+        // like ':method' cannot be set via Axios (http/1.1). We include their equivalents
+        // to match observed browser requests as closely as possible.
+        'method': 'POST',
+        'path': '/event/register',
+        'scheme': 'https',
+        'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
+        'sec-ch-ua-platform': '"Linux"',
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
         'x-luma-client-type': 'luma-web',
-        'x-luma-client-version': '01257ddc7a46f92dac90e52edd0d36ce618136e2', // Static for now, might need to be dynamic
+        'x-luma-client-version': 'b28c5f9b1aa7e8fed961add97128fc95149d0c7d',
         'x-luma-web-url': eventPageUrl // Dynamic based on the event page being registered for
     };
 
-    if (cookieString) {
-        headers['cookie'] = cookieString;
-    } else {
-        console.warn('No cookie string provided for submitRegistration. API call will likely fail.');
+    // Prefer cookieString passed from the caller (extracted from browser context). If missing, fall back to
+    // the example cookie string provided by the user (helps when testing via HTTP mode).
+    const fallbackCookie = 'luma.did=REDACTED; luma.first-page=REDACTED; luma.auth-session-key=REDACTED; __stripe_mid=REDACTED; __stripe_sid=REDACTED; __cf_bm=REDACTED; luma.native-referrer=REDACTED';
+
+    // ALWAYS use the cookie provided by the user (forced). This ensures the exact session is sent
+    // as requested instead of relying on extracted or missing cookies.
+    console.log('Forcing user-provided cookie for registration requests.');
+    headers['cookie'] = fallbackCookie;
+
+    // Compute and set Content-Length to match the JSON payload the browser would send.
+    // Axios/node will set this automatically, but some servers compare the exact header.
+    try {
+        const payloadString = JSON.stringify(payload);
+        const contentLength = Buffer.byteLength(payloadString, 'utf8');
+        headers['content-length'] = String(contentLength);
+    } catch (e) {
+        // If serialization fails for any reason, don't block — let Axios compute it.
+        console.warn('Failed to compute content-length for registration payload, proceeding without explicit header.', e);
+    }
+
+    // If caller provided header overrides (e.g., exact captured browser headers), merge them in.
+    if (headersOverride && typeof headersOverride === 'object') {
+        for (const k of Object.keys(headersOverride)) {
+            // Do not allow overriding the forced cookie header
+            if (k.toLowerCase() === 'cookie') continue;
+            headers[k] = headersOverride[k];
+        }
     }
 
     try {
-        const response = await axios.post(apiUrl, payload, { 
+        const response = await axios.post(apiUrl, payload, {
             headers,
             timeout: 30000 // 30 second timeout
         });

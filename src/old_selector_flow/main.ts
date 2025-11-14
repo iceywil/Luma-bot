@@ -2,12 +2,12 @@ import { chromium } from "playwright-extra";
 import stealth from "puppeteer-extra-plugin-stealth";
 import { Browser, Page } from "playwright";
 import * as readline from "readline/promises";
-import { readConfig, readProfile } from "./config"; // Restore readConfig import
+import { readConfig, readProfile } from "../api_flow/config"; // Restore readConfig import
 import { processEventPage } from "./eventProcessor"; // Import event processing function
 import * as fs from "fs/promises"; // Import fs for file operations
 import dotenv from "dotenv";
 import path from "path";
-import { getBrowserConfig } from "./browserConfig";
+import { getBrowserConfig } from "../api_flow/browserConfig";
 
 // Load environment variables from .env file
 dotenv.config();
