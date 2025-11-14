@@ -5,13 +5,12 @@ import * as dotenv from "dotenv";
 // Load environment variables from root .env file
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
-const PROFILE_FILE = path.resolve(__dirname, "../profile.txt"); // Resolve path relative to compiled JS
-const CONFIG_FILE = path.resolve(__dirname, "../config.txt"); // Restored
+const PROFILE_FILE = path.resolve(__dirname, "../../profile.txt"); // Resolve path relative to compiled JS
 
 // Restored readConfig function
 export async function readConfig(): Promise<Record<string, string>> {
+    const configPath = path.resolve(__dirname, "../../config.txt");
     try {
-        const configPath = path.resolve(__dirname, "../config.txt");
         const configContent = await fs.readFile(configPath, "utf-8");
         const config: Record<string, string> = {};
 
@@ -29,11 +28,15 @@ export async function readConfig(): Promise<Record<string, string>> {
 
         console.log("Config loaded from config.txt:", config);
         return config;
-    } catch (error) {
-        console.error(
-            `\x1b[31mCould not read config file ${CONFIG_FILE}:\x1b[0m`,
-            error
-        );
+    } catch (error: any) {
+        if (error.code === 'ENOENT') {
+            console.error('\x1b[31mPlease make sure you have a config.txt in the root directory. You can use config_template.txt, modify it, and rename it to config.txt.\x1b[0m');
+        } else {
+            console.error(
+                `\x1b[31mCould not read config file ${configPath}:\x1b[0m`,
+                error
+            );
+        }
         return {};
     }
 }

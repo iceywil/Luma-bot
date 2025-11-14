@@ -1,7 +1,7 @@
 import { Page, Locator } from 'playwright';
 import readline from 'readline/promises';
-import { readProfile } from './config';
-import { callLLMBatched, LLMFieldRequest as OriginalLLMFieldRequest } from './llm'; // Aliasing original
+import { readProfile } from '../api_flow/config';
+import { callLLMBatched, LLMFieldRequest as OriginalLLMFieldRequest } from '../api_flow/llm'; // Aliasing original
 import { findFieldByLabel } from './domUtils';
 import * as fs from 'fs/promises';
 
