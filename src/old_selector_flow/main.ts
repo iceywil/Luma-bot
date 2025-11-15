@@ -101,8 +101,8 @@ async function main() {
     const processingFailures: string[] = []; // Initialize array for failed events
 
     try {
-        // --- Navigate to Login Page and Wait ---
-        const loginUrl = "https://lu.ma/signin";
+        // Navigate to a page to ensure login state is loaded
+        const loginUrl = "https://luma.com/signin";
         console.log(`Navigating to login page: ${loginUrl}...`);
         await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 60000 });
         console.log(
@@ -111,9 +111,9 @@ async function main() {
 
         // --- Wait for redirection to home page after login ---
         console.log(
-            "Waiting for redirection to https://lu.ma/home after login..."
+            "Waiting for redirection to https://luma.com/home after login..."
         );
-        const homeUrl = "https://lu.ma/home";
+        const homeUrl = "https://luma.com/home";
         const loginCheckTimeout = 180000; // 3 minutes timeout for login
         const checkInterval = 2000; // Check URL every 2 seconds
         let currentTime = 0;

@@ -43,74 +43,54 @@ export async function clickIfPossible(locator: Locator, description: string, tim
 export async function findFieldByLabel(modalLocator: Locator, labelText: string, fieldTypeHint?: 'text' | 'select' | 'multiselect'): Promise<Locator | null> {
     console.log(`[findFieldByLabel] Searching for field associated with label containing text: "${labelText}"`);
 
-    // Sanitize labelText for use in selectors if needed (e.g., escaping quotes)
-    const sanitizedLabelText = labelText.replace(/"/g, '"'); // Basic example
-
     try {
-        // 1. Try finding label directly containing the text, then check `for` attribute
-        const directLabel = modalLocator.locator(`label:has-text("${sanitizedLabelText}")`).first();
-        if (await directLabel.isVisible({ timeout: 200 })) {
-            const forAttr = await directLabel.getAttribute('for');
-            if (forAttr) {
-                const targetField = modalLocator.locator(`#${forAttr}`);
-                if (await targetField.isVisible({ timeout: 200 })) {
-                    console.log(`[findFieldByLabel] Found via direct label [for="${forAttr}"]`);
-                    return targetField;
+        // Find the label that contains the text. This is our primary starting point.
+        const labelSelector = `label:has-text("${labelText.replace(/"/g, '\\"')}")`;
+        const label = modalLocator.locator(labelSelector).first();
+
+        if (await label.isVisible({ timeout: 500 })) {
+            // Strategy 1: The 'for' attribute is the most reliable method.
+            const forId = await label.getAttribute('for');
+            if (forId) {
+                const field = modalLocator.locator(`#${forId}`);
+                if (await field.count() > 0 && await field.isVisible({ timeout: 200 })) {
+                    console.log(`[findFieldByLabel] Found field #${forId} via label's 'for' attribute.`);
+                    return field;
                 }
             }
-             // 1b. If label has no `for`, check immediate following input/select/textarea
-             const nextField = directLabel.locator('xpath=./following-sibling::*[self::input or self::select or self::textarea][1]');
-             if (await nextField.isVisible({ timeout: 200 })) {
-                 console.log('[findFieldByLabel] Found via direct label + following-sibling field');
-                 return nextField;
-             }
-             // 1c. If label wraps the input (common)
-             const wrappedField = directLabel.locator('input, select, textarea').first();
-             if (await wrappedField.isVisible({ timeout: 200 })) {
-                 console.log('[findFieldByLabel] Found via wrapped field inside label');
-                 return wrappedField;
-             }
-        }
 
-        // 2. Try finding by aria-labelledby if label has an ID
-        const labelWithId = modalLocator.locator(`label:has-text("${sanitizedLabelText}")[id]`).first();
-        if (await labelWithId.isVisible({ timeout: 200 })) {
-             const labelId = await labelWithId.getAttribute('id');
-             if (labelId) {
-                 const targetField = modalLocator.locator(`[aria-labelledby="${labelId}"]`);
-                 if (await targetField.isVisible({ timeout: 200 })) {
-                     console.log(`[findFieldByLabel] Found via aria-labelledby="${labelId}"`);
-                     return targetField;
-                 }
-             }
-        }
+            // Strategy 2: The field is nested inside the label tag.
+            const nestedField = label.locator('input, select, textarea').first();
+            if (await nestedField.count() > 0 && await nestedField.isVisible({ timeout: 100 })) {
+                console.log('[findFieldByLabel] Found field nested inside the label.');
+                return nestedField;
+            }
 
-        // 3. Special Case: Multiselect triggers (using hint)
-        // These often have complex structures, rely on the hint if provided
-        if (fieldTypeHint === 'multiselect') {
-            // Find the div/element containing the label text, then find the specific trigger within/near it
-            // This selector might need adjustment based on actual Luma structure
-            const multiSelectTrigger = modalLocator.locator(`div:has(label:has-text("${sanitizedLabelText}"))`).locator('div.lux-menu-trigger-wrapper div.luma-input span').first();
-            // Alternative: Find label, go up to a common parent, then down to trigger
-            // const multiSelectTrigger = modalLocator.locator(`label:has-text("${sanitizedLabelText}")`).locator('xpath=ancestor::div[contains(@class, "form-group")]//div[contains(@class, "lux-menu-trigger")]'); // Example
-            if (await multiSelectTrigger.isVisible({ timeout: 200 })) {
-                 console.log('[findFieldByLabel] Found multiselect trigger near label using hint.');
-                 return multiSelectTrigger;
+            // Strategy 3: The field is within the same parent container as the label.
+            const parentContainer = label.locator('xpath=./ancestor::*[1]');
+            const fieldInParent = parentContainer.locator('input, select, textarea').first();
+             if (await fieldInParent.count() > 0 && await fieldInParent.isVisible({ timeout: 100 })) {
+                console.log('[findFieldByLabel] Found field within the same parent container as the label.');
+                return fieldInParent;
+            }
+
+            // Strategy 4: The field is a sibling of the label's parent.
+            const parentSiblingField = label.locator('xpath=./parent::*/following-sibling::*').locator('input, select, textarea').first();
+            if (await parentSiblingField.count() > 0 && await parentSiblingField.isVisible({ timeout: 100 })) {
+                console.log('[findFieldByLabel] Found field as a sibling to the label\'s parent container.');
+                return parentSiblingField;
             }
         }
         
-        // 4. Fallback: Look for input/select/textarea *near* the label text (less reliable)
-        // Find an element containing the label text, then look for inputs nearby
-        const elementContainingLabel = modalLocator.locator(`*:has-text("${sanitizedLabelText}")`).first();
-        if (await elementContainingLabel.isVisible({timeout: 200})) {
-             const nearbyField = elementContainingLabel.locator('xpath=following::input[1] | following::select[1] | following::textarea[1] | ancestor::*[./label][1]//input | ancestor::*[./label][1]//select | ancestor::*[./label][1]//textarea').first();
-             if (await nearbyField.isVisible({timeout: 200})) {
-                console.log('[findFieldByLabel] Found via nearby field (fallback).');
-                return nearbyField;
-             }
+        // Strategy 5: Find by placeholder text as a fallback.
+        const placeholderSelector = `[placeholder*="${labelText.replace(/"/g, '\\"')}"]`;
+        const fieldByPlaceholder = modalLocator.locator(placeholderSelector).first();
+        if (await fieldByPlaceholder.count() > 0 && await fieldByPlaceholder.isVisible({ timeout: 200 })) {
+            console.log(`[findFieldByLabel] Found field by placeholder text: "${labelText}"`);
+            return fieldByPlaceholder;
         }
 
-        console.warn(`[findFieldByLabel] Could not reliably find field associated with label: "${labelText}"`);
+        console.log(`[findFieldByLabel] Could not find a reliable field for label: "${labelText}"`);
         return null;
 
     } catch (error) {

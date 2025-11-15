@@ -4,10 +4,42 @@ import { readProfile } from '../api_flow/config';
 import { callLLMBatched, LLMFieldRequest as OriginalLLMFieldRequest } from '../api_flow/llm'; // Aliasing original
 import { findFieldByLabel } from './domUtils';
 import * as fs from 'fs/promises';
+import * as path from 'path';
+
+// --- Global Cache Variables ---
+const CACHE_FILE_PATH = path.resolve(__dirname, '../../selector_cache.json');
+let selectorCache: Record<string, string> = {};
+
+// --- Cache Helper Functions ---
+async function loadSelectorCache() {
+    try {
+        if (require('fs').existsSync(CACHE_FILE_PATH)) {
+            const data = await fs.readFile(CACHE_FILE_PATH, 'utf8');
+            selectorCache = JSON.parse(data);
+            console.log('Successfully loaded selector cache.');
+        } else {
+            console.log('Selector cache file not found. A new one will be created.');
+        }
+    } catch (error) {
+        console.error('Error loading selector cache:', error);
+    }
+}
+
+async function saveSelectorCache() {
+    try {
+        await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(selectorCache, null, 2), 'utf8');
+        console.log('Selector cache saved successfully.');
+    } catch (error) {
+        console.error('Error saving selector cache:', error);
+    }
+}
+// --- End Cache Helpers ---
+
 
 // Extend LLMFieldRequest to include isCustomTrigger
 interface LLMFieldRequest extends OriginalLLMFieldRequest {
     isCustomTrigger?: boolean;
+    fieldId?: string | null; // Add fieldId to the request
 }
 
 // --- Sanitization Helper ---
@@ -167,6 +199,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
     const llmUpdates: Record<string, string | string[] | null> = {};
     const fieldsToAskLLM: LLMFieldRequest[] = [];
 
+    await loadSelectorCache(); // Load the cache at the beginning
+
     try {
         // --- Initialize rl and modal inside try block ---
         rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -265,8 +299,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                 // placeholderTextToUse is already fieldPlaceholder (from input attribute)
                 console.log(`[Pass 1 DEBUG] Input aria-haspopup: "${hasPopup}", placeholder: "${placeholderTextToUse}"`); 
                 
-                if (hasPopup === 'listbox' || placeholderTextToUse === 'Select an option') {
-                     const reason = hasPopup === 'listbox' ? 'aria-haspopup' : 'placeholder';
+                if (hasPopup === 'listbox') {
+                     const reason = 'aria-haspopup';
                      console.log(`[Pass 1 DEBUG] Input identified as Custom Select (Single) via ${reason}.`);
                      fieldType = 'select';
                      isCustomSelect = true;
@@ -445,7 +479,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                     options, 
                     locator: field, 
                     isMandatory: isMandatoryField,  // Use renamed variable
-                    isCustomTrigger: isFieldCustomTrigger // Add the new flag
+                    isCustomTrigger: isFieldCustomTrigger, // Add the new flag
+                    fieldId: fieldId // Pass the extracted ID
                 }); 
             }
 
@@ -599,7 +634,7 @@ export async function handleModal(page: Page, config: Record<string, string>): P
 
         // Iterate through all fields identified in Pass 1/2
         for (const fieldRequest of fieldsToAskLLM) {
-            const { identifier, type, isMandatory, locator, isCustomTrigger } = fieldRequest; // Include isCustomTrigger
+            const { identifier, type, isMandatory, locator, isCustomTrigger, fieldId } = fieldRequest; // Include fieldId
             
             const llmSuggestion = llmResponseMap.get(identifier); // Look up using sanitized identifier
             
@@ -639,20 +674,64 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                     let freshLocator: Locator | null;
                     // const originalFieldTag = await fieldRequest.locator.evaluate(el => el.tagName.toLowerCase()); // Already have locator. This line was causing a lint error, so it's commented out or removed if not needed.
 
-                    if (isCustomTrigger) { // Check the flag from LLMFieldRequest
-                        console.log(`  [Pass 3] Using direct locator for custom trigger field "${identifier}".`);
-                        freshLocator = locator; // Use the locator stored in fieldRequest
+                    // --- NEW CACHE LOGIC ---
+                    const cachedSelector = selectorCache[identifier];
+                    if (cachedSelector) {
+                        console.log(`  [Pass 3] Found cached selector for "${identifier}": ${cachedSelector}`);
+                        freshLocator = modal!.locator(cachedSelector);
+                        // Quick validation of the cached selector
+                        if (!(await freshLocator.isVisible({ timeout: 1000 }))) {
+                            console.warn(`  [Pass 3] Cached selector for "${identifier}" is not visible. Falling back to label search.`);
+                            freshLocator = null; // Invalidate it
+                        }
                     } else {
-                        console.log(`  [Pass 3] Attempting to find field via label for: "${identifier}" (type: ${type}).`);
-                        freshLocator = await findFieldByLabel(modal!, identifier, type === 'checkbox' ? undefined : type);
+                        freshLocator = null; // Not in cache
                     }
+
+                    if (!freshLocator) { // If not found in cache or cache was invalid
+                        if (isCustomTrigger) { // Check the flag from LLMFieldRequest
+                            console.log(`  [Pass 3] Using direct locator for custom trigger field "${identifier}".`);
+                            freshLocator = locator; // Use the locator stored in fieldRequest
+                        } else {
+                            console.log(`  [Pass 3] Attempting to find field via label for: "${identifier}" (type: ${type}).`);
+                            freshLocator = await findFieldByLabel(modal!, identifier, type === 'checkbox' ? undefined : type);
+                        }
+                    }
+                    // --- END NEW CACHE LOGIC ---
+
+                    // --- NEW ID-based locator strategy ---
+                    if (!freshLocator && fieldId) {
+                        console.log(`  [Pass 3] Using cached fieldId to locate: #${fieldId}`);
+                        freshLocator = modal!.locator(`#${fieldId}`);
+                        if (!(await freshLocator.isVisible({ timeout: 1000 }))) {
+                            console.warn(`  [Pass 3] Field #${fieldId} found via ID is not visible. Clearing locator.`);
+                            freshLocator = null;
+                        }
+                    }
+                    // --- END NEW STRATEGY ---
+
 
                     if (!freshLocator) {
                         console.error(`\x1b[31m  [Pass 3] Could not obtain locator for field "${identifier}". Skipping LLM application.\x1b[0m`);
                     } else {
+                        // Successfully found a locator, let's cache it if it wasn't from the cache
+                        if (!cachedSelector) {
+                            const newSelector = await freshLocator.evaluate(el => {
+                                // Basic selector generation, can be improved
+                                if (el.id) return `#${el.id}`;
+                                if (el.getAttribute('name')) return `[name="${el.getAttribute('name')}"]`;
+                                // Add more robust selector strategies if needed
+                                return null;
+                            });
+                            if (newSelector) {
+                                console.log(`  [Pass 3] Caching new selector for "${identifier}": ${newSelector}`);
+                                selectorCache[identifier] = newSelector;
+                            }
+                        }
+
                         // Only log "Successfully re-found" if we actually used findFieldByLabel and it was not a custom trigger handled by direct locator
-                        if (!isCustomTrigger) { 
-                             console.log(`  [Pass 3] Successfully re-found locator for "${identifier}" via findFieldByLabel.`);
+                        if (!isCustomTrigger && !cachedSelector) { 
+                             console.log(`  [Pass 3] Successfully found locator for "${identifier}" via findFieldByLabel.`);
                         }
                         // console.log(`  [Pass 3] Successfully re-found locator for "${identifier}".`); // Old log
                         let applySuccess = false; 
@@ -923,6 +1002,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
         }
     }
     
+    await saveSelectorCache(); // Save the cache at the end
+
     // Return the collected data if successful, otherwise null
     return success ? filledModalData : null; 
 } 

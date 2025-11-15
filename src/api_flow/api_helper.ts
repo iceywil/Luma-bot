@@ -276,24 +276,25 @@ export async function submitRegistration(payload: any, cookieString: string | nu
         'scheme': 'https',
         'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Linux"',
+        'sec-ch-ua-platform': '"macOS"',
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
         'x-luma-client-type': 'luma-web',
         'x-luma-client-version': 'b28c5f9b1aa7e8fed961add97128fc95149d0c7d',
         'x-luma-web-url': eventPageUrl // Dynamic based on the event page being registered for
     };
 
-    // Prefer cookieString passed from the caller (extracted from browser context). If missing, fall back to
-    // the example cookie string provided by the user (helps when testing via HTTP mode).
-    const fallbackCookie = 'luma.did=REDACTED; luma.first-page=REDACTED; luma.auth-session-key=REDACTED; __stripe_mid=REDACTED; __stripe_sid=REDACTED; __cf_bm=REDACTED; luma.native-referrer=REDACTED';
-
-    // ALWAYS use the cookie provided by the user (forced). This ensures the exact session is sent
-    // as requested instead of relying on extracted or missing cookies.
-    console.log('Forcing user-provided cookie for registration requests.');
-    headers['cookie'] = fallbackCookie;
+    // Use the dynamically provided cookie string from the browser context.
+    // If it's missing, log a warning, as the request will likely fail without authentication.
+    if (cookieString) {
+        headers['cookie'] = cookieString;
+    } else {
+        console.warn('  Warning: No cookieString provided to submitRegistration. The request will likely fail.');
+        // Consider throwing an error if a cookie is absolutely required.
+        // throw new Error('Registration requires a valid cookie string.');
+    }
 
     // Compute and set Content-Length to match the JSON payload the browser would send.
     // Axios/node will set this automatically, but some servers compare the exact header.
