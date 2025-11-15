@@ -2,7 +2,7 @@ import { Page, BrowserContext } from 'playwright';
 import { readProfile } from '../api_flow/config'; // Import readProfile from config.ts
 import { chooseBestFreeTicketLLM, callLLMBatched, LLMFieldRequest } from '../api_flow/llm'; // Adjust LLM imports
 import { handleModal } from './modalHandler';
-// import * as fs from 'fs/promises'; // Comment out if fs is no longer used elsewhere
+import * as fs from 'fs/promises';
 
 // Define selectors used in this module
 const ticketSectionSelector = '.ticket-section';
@@ -46,6 +46,16 @@ export async function processEventPage(
         eventPage = await context.newPage();
         await eventPage.goto(eventUrl, { waitUntil: 'load', timeout: 60000 }); // Changed to waitUntil: 'load'        
        
+        // --- DEBUG: Save HTML content to a file ---
+        try {
+            const htmlContent = await eventPage.content();
+            await fs.writeFile('test.txt', htmlContent, 'utf8');
+            console.log('  Successfully saved page HTML to test.txt for debugging.');
+        } catch (htmlError) {
+            console.error('  Failed to save page HTML to test.txt:', htmlError);
+        }
+        // --- END DEBUG ---
+
         let processedSuccessfully = false;
         let eventStatus = 'Skipped'; // Default status
         let chosenTicket = 'N/A'; // Declare chosenTicket here
@@ -201,7 +211,7 @@ export async function processEventPage(
                 console.log(`Found primary button with text: "${buttonText}"`);
 
                 // Use only English button texts
-                if (buttonText.includes('Register') || buttonText.includes('Apply') || buttonText.includes("Ask to Join") || buttonText.includes("Request to Join")) {
+                if (buttonText.includes('Register') || buttonText.includes('Apply') || buttonText.includes("Ask to Join") || buttonText.includes("Request to Join") || buttonText.includes("Accept Invite")) {
                     console.log('Attempting registration/application...');
                     await primaryButton.click({ timeout: 10000 });
                     modalData = await handleModal(eventPage, config);

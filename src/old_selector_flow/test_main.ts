@@ -3,8 +3,34 @@ import stealth from 'puppeteer-extra-plugin-stealth';
 import { readConfig, readProfile } from '../api_flow/config'; // Adjusted path
 import { processEventPage } from './eventProcessor'; // Adjusted path
 import * as fs from 'fs/promises';
+import { createWriteStream } from 'fs';
 import dotenv from 'dotenv';
 import path from 'path';
+
+// --- Log Redirection ---
+const logFile = createWriteStream('logs.txt', { flags: 'w' });
+const originalConsoleLog = console.log;
+const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
+
+console.log = (...args: any[]) => {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    logFile.write(`[LOG] ${new Date().toISOString()}: ${message}\n`);
+    originalConsoleLog.apply(console, args);
+};
+
+console.warn = (...args: any[]) => {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    logFile.write(`[WARN] ${new Date().toISOString()}: ${message}\n`);
+    originalConsoleWarn.apply(console, args);
+};
+
+console.error = (...args: any[]) => {
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    logFile.write(`[ERROR] ${new Date().toISOString()}: ${message}\n`);
+    originalConsoleError.apply(console, args);
+};
+// --- End Log Redirection ---
 
 // Load environment variables from .env file
 dotenv.config({ path: path.resolve(__dirname, './.env') }); // Ensure .env is loaded from project root if test_main is in root
@@ -47,12 +73,12 @@ async function testMain() {
 
   try {
     // --- Navigate to Login Page and Wait ---
-    const loginUrl = 'https://lu.ma/signin';
+    const loginUrl = 'https://luma.com/signin';
     console.log(`Navigating to login page: ${loginUrl}...`);
     await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 60000 });
     console.log(`Successfully navigated to ${loginUrl}. Please log in if prompted.`);
     
-    const homeUrl = 'https://lu.ma/home';
+    const homeUrl = 'https://luma.com/home';
     console.log(`Waiting for redirection to ${homeUrl} after login...`);
     const loginCheckTimeout = 180000; // 3 minutes
     const checkInterval = 2000;
@@ -80,7 +106,7 @@ async function testMain() {
     const config = await readConfig(); 
     // const profile = await readProfile(); // readProfile is called within processEventPage
 
-    const testEventUrl = 'https://lu.ma/bncannes';
+    const testEventUrl = 'https://luma.com/556u6boj';
     console.log(`\n--- Processing Single Test Event: ${testEventUrl} ---`);
     
     // Navigate to the event page using the main page object from the context

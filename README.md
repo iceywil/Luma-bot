@@ -21,6 +21,6 @@ How to use
 -	Rename config_template.txt to config.txt
 -   Run in your terminal the command : npm i
 -   Close chosen browser (Google Chrome) completly
--   While being in this folder run in your terminal the command : npm run start
+-   While being in this folder run in your terminal the command : npm run selector
 -   On the page that opens, log in to your luma account then wait (You have 60 seconds to log in)
 -   Enjoy !
