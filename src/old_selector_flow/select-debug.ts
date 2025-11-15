@@ -1,8 +1,10 @@
 import { chromium, Locator } from 'playwright';
 import * as fs from 'fs/promises';
+import * as path from 'path';
+import { processEvent } from "./eventProcessor";
 
 // --- Config ---
-const eventUrl = 'https://lu.ma/UnchainedSummitDubai'; // Use the URL from the web search result
+const eventUrl = 'https://luma.com/UnchainedSummitDubai'; // Use the URL from the web search result
 const registerButtonSelector = 'button:has-text("Request to Join")'; 
 // ** UPDATED HYPOTHETICAL SELECTORS - VERIFY THESE **
 const dropdownSelector = 'div.lux-menu'; // Try common Luma menu class

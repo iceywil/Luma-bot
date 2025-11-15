@@ -276,24 +276,25 @@ export async function submitRegistration(payload: any, cookieString: string | nu
         'scheme': 'https',
         'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Linux"',
+        'sec-ch-ua-platform': '"macOS"',
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-site',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
         'x-luma-client-type': 'luma-web',
         'x-luma-client-version': 'b28c5f9b1aa7e8fed961add97128fc95149d0c7d',
         'x-luma-web-url': eventPageUrl // Dynamic based on the event page being registered for
     };
 
-    // Prefer cookieString passed from the caller (extracted from browser context). If missing, fall back to
-    // the example cookie string provided by the user (helps when testing via HTTP mode).
-    const fallbackCookie = 'luma.did=r221e3gsfy15u0ldx1024ecid04l6q; luma.first-page=%2Fgoogle%3Fstate%3D7tjtieics0m0clq6nm6ve031tiitvvte%26code%3D4%252F0Ab32j92eHRBmOX8XBGjWkzq6nzWs42gUOJwd1nHwXtR-gGcN4MvMtzTJO2Xgo56hoz9vJQ%26scope%3Demail%2Bprofile%2Bhttps%253A%252F%252Fwww.googleapis.com%252Fauth%252Fuserinfo.profile%2Bhttps%253A%252F%252Fwww.googleapis.com%252Fauth%252Fuserinfo.email%2Bopenid%26authuser%3D0%26prompt%3Dconsent; luma.auth-session-key=usr-pHEBFHsccyANhwO.m43vli57b7761916dqxp; __stripe_mid=b4cb150f-ac63-4ec4-8b73-dd79bacf0b7d898931; __stripe_sid=7e15584b-be99-4398-809d-fe628bb72c0310a980; __cf_bm=yVcVRxjoh9dReXwZ4pJTufZXaaw7z7hXteF7I8Xluig-1763150054-1.0.1.1-R4Z2xFJIHf9P73P76ywapxbsW0jKy5izPhM93CWg0qb8fRTrX3EQpmsqvGJay378c1ClwfhJeq70FqS44W.zRCAxJUha2UtzedjuTcUsMmbmEGV3Cp5Liezkg_ESteuW; luma.native-referrer=https%3A%2F%2Fluma.com%2Fhome';
-
-    // ALWAYS use the cookie provided by the user (forced). This ensures the exact session is sent
-    // as requested instead of relying on extracted or missing cookies.
-    console.log('Forcing user-provided cookie for registration requests.');
-    headers['cookie'] = fallbackCookie;
+    // Use the dynamically provided cookie string from the browser context.
+    // If it's missing, log a warning, as the request will likely fail without authentication.
+    if (cookieString) {
+        headers['cookie'] = cookieString;
+    } else {
+        console.warn('  Warning: No cookieString provided to submitRegistration. The request will likely fail.');
+        // Consider throwing an error if a cookie is absolutely required.
+        // throw new Error('Registration requires a valid cookie string.');
+    }
 
     // Compute and set Content-Length to match the JSON payload the browser would send.
     // Axios/node will set this automatically, but some servers compare the exact header.
