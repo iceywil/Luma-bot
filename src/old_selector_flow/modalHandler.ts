@@ -718,14 +718,18 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                         if (!cachedSelector) {
                             const newSelector = await freshLocator.evaluate(el => {
                                 // Basic selector generation, can be improved
-                                if (el.id) return `#${el.id}`;
                                 if (el.getAttribute('name')) return `[name="${el.getAttribute('name')}"]`;
-                                // Add more robust selector strategies if needed
+                                if (el.id) return `#${el.id}`;
                                 return null;
                             });
                             if (newSelector) {
-                                console.log(`  [Pass 3] Caching new selector for "${identifier}": ${newSelector}`);
-                                selectorCache[identifier] = newSelector;
+                                // Do not cache selectors that are clearly dynamic IDs.
+                                if (newSelector.startsWith('#_r_')) {
+                                    console.log(`  [Pass 3] Not caching likely dynamic selector for "${identifier}": ${newSelector}`);
+                                } else {
+                                    console.log(`  [Pass 3] Caching new selector for "${identifier}": ${newSelector}`);
+                                    selectorCache[identifier] = newSelector;
+                                }
                             }
                         }
 

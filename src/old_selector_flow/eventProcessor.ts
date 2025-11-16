@@ -13,7 +13,8 @@ const pendingStatusTexts = [
     "Pending Approval", 
     "You’re In",
     "You are registered",
-    "On the waitlist"
+    "On the waitlist",
+    "You're on the waitlist"
 ]; 
 const statusDivSelector = 'div.title.mt-2.fw-medium'; // Selector for the element containing the status text
 const modalSelector = 'div.lux-overlay.glass'; // Define main modal selector locally
