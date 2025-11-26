@@ -6,7 +6,8 @@
 	"start": "npx ts-node src/api_flow/main_api.ts",
     "api": "npx ts-node src/api_flow/main_api.ts",
     "selector": "npx ts-node src/old_selector_flow/main.ts",
-    "test": "npx ts-node src/old_selector_flow/test_main.ts"
+    "test": "npx ts-node src/old_selector_flow/test_main.ts",
+    "prompt-open-urls": "npx ts-node src/cli/promptOpenTabsCli.ts"
   },
   "keywords": [],
   "author": "",
