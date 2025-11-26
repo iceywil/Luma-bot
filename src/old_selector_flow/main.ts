@@ -8,6 +8,7 @@ import * as fs from "fs/promises"; // Import fs for file operations
 import dotenv from "dotenv";
 import path from "path";
 import { getBrowserConfig } from "../api_flow/browserConfig";
+import promptAndOpen from "../utils/promptOpenTabs";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -219,6 +220,15 @@ async function main() {
             console.log(
                 "\nAll events processed successfully or skipped as per criteria."
             );
+        }
+
+        // Offer to open the failed URLs in Chrome (uses src/utils/promptOpenTabs.ts)
+        try {
+            if (processingFailures.length > 0) {
+                await promptAndOpen(processingFailures);
+            }
+        } catch (err) {
+            console.error("Error prompting to open tabs:", err);
         }
 
         await new Promise((resolve) => setTimeout(resolve, 10000)); // Keep the pause

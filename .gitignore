@@ -2,5 +2,5 @@
 /playwright_chrome_profile
 /src/playwright_chrome_profile
 /src/old_selector_flow/playwright_chrome_profile
-
+selector_cache.json
 config.txt
