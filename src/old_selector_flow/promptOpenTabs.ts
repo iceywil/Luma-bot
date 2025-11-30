@@ -36,16 +36,17 @@ export async function promptAndOpen(urls: string[]) {
     }
   }
 
-  // final fallback: use xdg-open for each URL
+  // final fallback: use xdg-open for linux or open for mac
+  const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
   for (const u of urls) {
     try {
-      const c = spawn('xdg-open', [u], { detached: true, stdio: 'ignore' });
+      const c = spawn(openCmd, [u], { detached: true, stdio: 'ignore' });
       c.unref();
     } catch (err) {
       // ignore
     }
   }
-  console.log('Opened URLs with the default handler (xdg-open).');
+  console.log(`Opened URLs with the default handler (${openCmd}).`);
 }
 
 export default promptAndOpen;

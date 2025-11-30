@@ -8,7 +8,7 @@ import * as fs from "fs/promises"; // Import fs for file operations
 import dotenv from "dotenv";
 import path from "path";
 import { getBrowserConfig } from "../api_flow/browserConfig";
-import promptAndOpen from "../utils/promptOpenTabs";
+import promptAndOpen from "./promptOpenTabs";
 
 // Load environment variables from .env file
 dotenv.config();

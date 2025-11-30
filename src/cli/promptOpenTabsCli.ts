@@ -1,4 +1,4 @@
-import promptAndOpen from '../utils/promptOpenTabs';
+import promptAndOpen from '../old_selector_flow/promptOpenTabs';
 
 async function main() {
   const readline = await import('readline');

@@ -12,11 +12,15 @@ const ticketRegisterButtonSelector = 'button:has-text("Register"), button:has-te
 const pendingStatusTexts = [
     "Pending Approval", 
     "You’re In",
+    "You're In",
     "You are registered",
     "On the waitlist",
-    "You're on the waitlist"
+    "You’re on the Waitlist",
+    "You're on the waitlist",
+    "You're Not Going",
+    "YOU'RE ON THE WAITLIST",
 ]; 
-const statusDivSelector = 'div.title.mt-2.fw-medium'; // Selector for the element containing the status text
+const statusDivSelector = 'div.title.mt-2'; // Selector for the element containing the status text
 const modalSelector = 'div.lux-overlay.glass'; // Define main modal selector locally
 
 // --- Helper Function to Click "Register" or "Apply" and handle LLM --- 
@@ -239,7 +243,7 @@ export async function processEventPage(
                         processedSuccessfully = true;
                         eventStatus = 'On Waitlist (Button Not Interactable)';
                     }
-                } else if (buttonText.includes('1-click')) {
+                } else if (buttonText.includes('1-click') || buttonText.includes('RSVP in one click')) {
                      console.log('Attempting 1-click registration...');
                      try {
                          await primaryButton.click({ timeout: 10000 });
