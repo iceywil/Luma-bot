@@ -3,38 +3,6 @@ import readline from 'readline/promises';
 import { readProfile } from '../api_flow/config';
 import { callLLMBatched, LLMFieldRequest as OriginalLLMFieldRequest } from '../api_flow/llm'; // Aliasing original
 import { findFieldByLabel } from './domUtils';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-
-// --- Global Cache Variables ---
-const CACHE_FILE_PATH = path.resolve(__dirname, '../../selector_cache.json');
-let selectorCache: Record<string, string> = {};
-
-// --- Cache Helper Functions ---
-async function loadSelectorCache() {
-    try {
-        if (require('fs').existsSync(CACHE_FILE_PATH)) {
-            const data = await fs.readFile(CACHE_FILE_PATH, 'utf8');
-            selectorCache = JSON.parse(data);
-            console.log('Successfully loaded selector cache.');
-        } else {
-            console.log('Selector cache file not found. A new one will be created.');
-        }
-    } catch (error) {
-        console.error('Error loading selector cache:', error);
-    }
-}
-
-async function saveSelectorCache() {
-    try {
-        await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(selectorCache, null, 2), 'utf8');
-        console.log('Selector cache saved successfully.');
-    } catch (error) {
-        console.error('Error saving selector cache:', error);
-    }
-}
-// --- End Cache Helpers ---
-
 
 // Extend LLMFieldRequest to include isCustomTrigger
 interface LLMFieldRequest extends OriginalLLMFieldRequest {
@@ -198,8 +166,7 @@ export async function handleModal(page: Page, config: Record<string, string>): P
     const filledModalData: Record<string, string | string[] | null> = {}; // Initialize object to collect filled data
     const llmUpdates: Record<string, string | string[] | null> = {};
     const fieldsToAskLLM: LLMFieldRequest[] = [];
-
-    await loadSelectorCache(); // Load the cache at the beginning
+    const selectorCache: Record<string, string> = {};
 
     try {
         // --- Initialize rl and modal inside try block ---
@@ -450,18 +417,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                     console.log('  Closed custom select dropdown after extraction.');
                     await page.waitForTimeout(200); 
                 } catch (optionError) {
-                     console.error('\x1b[31m  Failed to extract custom select options:\x1b[0m', optionError);
+                     console.error('Failed to extract custom select options:', optionError);
                      options = []; 
-                     // *** Save HTML for debugging extraction failure ***
-                     try {
-                          const html = await page.content();
-                          const filename = `option_extract_fail_${sanitizedIdentifier.replace(/[^a-z0-9]/gi, '')}_${Date.now()}.html`;
-                          await fs.writeFile(filename, html);
-                          console.log(`  Saved page HTML to ${filename} for debugging extraction failure.`);
-                     } catch (saveError) {
-                          console.error('  Error saving debug HTML:', saveError);
-                     }
-                     // *** End Save HTML ***
                 }
             } else if (fieldType === 'select' && tagName === 'select') { // Handle standard <select> option extraction
                  options = await field.locator('option').evaluateAll(opts =>
@@ -1006,8 +963,6 @@ export async function handleModal(page: Page, config: Record<string, string>): P
         }
     }
     
-    await saveSelectorCache(); // Save the cache at the end
-
     // Return the collected data if successful, otherwise null
     return success ? filledModalData : null; 
 } 
