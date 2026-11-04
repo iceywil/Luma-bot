@@ -7,43 +7,85 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const PROFILE_FILE = path.resolve(__dirname, "../../profile.txt"); // Resolve path relative to compiled JS
 
-// Restored readConfig function
+// Settings that can also be provided as environment variables (they override config.txt).
+// Useful on a server, where config.txt is not deployed.
+const ENV_CONFIG_KEYS = [
+    "EVENT_CALENDAR_URL",
+    "CLAUDE_MODEL",
+    "LLM_BATCH_CONTEXT",
+    "LLM_BATCH_PROMPT_TEMPLATE",
+    "LLM_TICKET_CONTEXT",
+    "LLM_TICKET_PROMPT_TEMPLATE",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CLI_PATH",
+    "MAX_REGISTRATIONS_PER_RUN",
+    "TIMEZONE",
+    "DRY_RUN",
+    "BROWSER",
+    "SERVER_MODE",
+    "HEADLESS",
+    "MAX_EVENTS",
+    "CAPTCHA_WAIT_SECONDS",
+    "BROWSER_MODE",
+    "MANUAL_SUBMIT",
+    "MANUAL_SUBMIT_WAIT_SECONDS",
+    "AUTO_CAPTCHA",
+    "EVENT_TIMEOUT_SECONDS",
+    "MAX_RUN_MINUTES",
+];
+
+function maskSecrets(config: Record<string, string>): Record<string, string> {
+    const masked: Record<string, string> = {};
+    for (const [key, value] of Object.entries(config)) {
+        masked[key] = /KEY|TOKEN|SECRET|COOKIE/i.test(key) ? "***" : value;
+    }
+    return masked;
+}
+
 export async function readConfig(): Promise<Record<string, string>> {
     const configPath = path.resolve(__dirname, "../../config.txt");
+    const config: Record<string, string> = {};
     try {
         const configContent = await fs.readFile(configPath, "utf-8");
-        const config: Record<string, string> = {};
-
         configContent.split("\n").forEach((line) => {
-            const [key, value] = line.split("=").map((s) => s.trim());
+            if (line.trim().startsWith("#")) return;
+            const separatorIndex = line.indexOf("=");
+            if (separatorIndex === -1) return;
+            const key = line.slice(0, separatorIndex).trim();
+            const value = line.slice(separatorIndex + 1).trim();
             if (key && value) {
                 config[key] = value;
             }
         });
-
-        // Set default browser if not specified
-        if (!config["BROWSER"]) {
-            config["BROWSER"] = "chrome";
-        }
-
-        console.log("Config loaded from config.txt:", config);
-        return config;
     } catch (error: any) {
         if (error.code === 'ENOENT') {
-            console.error('\x1b[31mPlease make sure you have a config.txt in the root directory. You can use config_template.txt, modify it, and rename it to config.txt.\x1b[0m');
+            console.warn('\x1b[33mNo config.txt found, using environment variables only. Locally, you can use config_template.txt, modify it, and rename it to config.txt.\x1b[0m');
         } else {
             console.error(
                 `\x1b[31mCould not read config file ${configPath}:\x1b[0m`,
                 error
             );
         }
-        return {};
     }
+
+    for (const key of ENV_CONFIG_KEYS) {
+        if (process.env[key]) {
+            config[key] = process.env[key] as string;
+        }
+    }
+
+    // Set default browser if not specified
+    if (!config["BROWSER"]) {
+        config["BROWSER"] = "chrome";
+    }
+
+    console.log("Config loaded:", maskSecrets(config));
+    return config;
 }
 
-export async function readProfile(): Promise<Record<string, string>> {
+export async function readProfile(profileFile: string = PROFILE_FILE): Promise<Record<string, string>> {
     try {
-        const data = await fs.readFile(PROFILE_FILE, "utf-8");
+        const data = await fs.readFile(profileFile, "utf-8");
         const lines = data.split("\n");
         const profile: Record<string, string> = {};
         for (const line of lines) {
@@ -56,7 +98,7 @@ export async function readProfile(): Promise<Record<string, string>> {
         return profile;
     } catch (error) {
         console.warn(
-            `\x1b[33mCould not read profile file ${PROFILE_FILE}:\x1b[0m`,
+            `\x1b[33mCould not read profile file ${profileFile}:\x1b[0m`,
             error
         );
         return {};

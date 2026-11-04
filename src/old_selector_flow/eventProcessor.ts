@@ -1,8 +1,46 @@
-import { Page, BrowserContext } from 'playwright';
+import { Page, BrowserContext, Locator } from 'playwright';
 import { readProfile } from '../api_flow/config'; // Import readProfile from config.ts
 import { chooseBestFreeTicketLLM, callLLMBatched, LLMFieldRequest } from '../api_flow/llm'; // Adjust LLM imports
-import { handleModal } from './modalHandler';
+import { handleModal, pagesAwaitingManualSubmit, pagesWithPaidRegistration } from './modalHandler';
+import { waitOutCloudflareChallenge, CloudflareChallengeError } from './cloudflare';
+import { BrowserClosedError, isBrowserClosedError } from './browserClosed';
+import { SUBMITTED_STATUSES } from './statusProbe';
 import * as fs from 'fs/promises';
+
+// Luma's approval_status for the signed-in account on the event open in `page`: null when Luma has no
+// registration, undefined when it can't be read. Luma can take a moment to show a fresh application.
+async function lumaRegistrationStatus(page: Page, attempts = 5): Promise<string | null | undefined> {
+    const eventApiId = (await page.content().catch(() => '')).match(/"(?:event_)?api_id"\s*:\s*"(evt-[a-zA-Z0-9]+)"/)?.[1];
+    if (!eventApiId) return undefined;
+    let status: string | null | undefined;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0) await page.waitForTimeout(2000);
+        status = await page.evaluate(async (id) => {
+            const response = await fetch(`https://api.luma.com/event/get?event_api_id=${id}`, { credentials: 'include' });
+            if (!response.ok) return undefined;
+            const data = await response.json();
+            const status = (data?.guest_data ?? data?.role ?? data?.guest_info)?.approval_status;
+            return typeof status === 'string' ? status.toLowerCase() : null;
+        }, eventApiId).catch(() => undefined);
+        if (status && SUBMITTED_STATUSES.includes(status)) break;
+    }
+    return status;
+}
+
+// Clicks a button of the event page (main button, ticket). Something can sit on top of it for a moment
+// (a card in a section still expanding): then bring it to the middle of the screen and retry, and as a last
+// resort send the click to the button itself.
+async function clickEventButton(page: Page, button: Locator): Promise<void> {
+    try {
+        await button.click({ timeout: 10000 });
+    } catch (error: any) {
+        if (!/intercepts pointer events|Timeout/i.test(error?.message || '')) throw error;
+        console.warn('  Button covered or not clickable yet, retrying...');
+        await button.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+        await page.waitForTimeout(1500);
+        await button.click({ timeout: 5000 }).catch(() => button.dispatchEvent('click'));
+    }
+}
 
 // Define selectors used in this module
 const ticketSectionSelector = '.ticket-section';
@@ -35,10 +73,13 @@ export async function processEventPage(
     page: Page, 
     context: BrowserContext, 
     eventUrl: string, 
-    config: Record<string, string>
+    config: Record<string, string>,
+    profile?: Record<string, string>
 ): Promise<boolean> {
     let overallSuccess = false;
-    const profileData = await readProfile(); // Load profile data once
+    // Set once the bot clicked something that should register: the result is then checked with Luma
+    let attempted = false;
+    const profileData = profile ?? await readProfile(); // Load profile data once
     if (Object.keys(profileData).length === 0) {
         console.warn('Profile data is empty. LLM calls may be impaired.');
     }
@@ -50,6 +91,7 @@ export async function processEventPage(
         console.log(`  Navigating to event page: ${eventUrl}`);
         eventPage = await context.newPage();
         await eventPage.goto(eventUrl, { waitUntil: 'load', timeout: 60000 }); // Changed to waitUntil: 'load'        
+        await waitOutCloudflareChallenge(eventPage, config);
        
         // --- DEBUG: Save HTML content to a file ---
         try {
@@ -159,12 +201,13 @@ export async function processEventPage(
                         console.log(`Attempting to register for chosen free ticket: "${chosenTicketName}"`);
                         try {
                             await chosenOption.buttonLocator.click();
+                            attempted = true;
                             console.log(`  Clicked register button for ticket "${chosenTicketName}".`);
                             // Check if modal appeared after ticket click
                             try {
                                 await eventPage.waitForSelector(modalSelector, { state: 'visible', timeout: 7000 });
                                 console.log('Modal appeared after clicking free ticket. Handling modal...');
-                                modalData = await handleModal(eventPage, config);
+                                modalData = await handleModal(eventPage, config, profileData);
                                 eventStatus = modalData ? 'Ticket Registered (Free + Modal)' : 'Modal Processing Failed';
                                 processedSuccessfully = !!modalData; // Success depends on modal handling
                             } catch (modalError) {
@@ -204,6 +247,46 @@ export async function processEventPage(
         }
         // --- End Restored Ticket Check ---
 
+        // --- Current Luma ticket picker (button.ticket-type-btn): a ticket must be picked before Register enables ---
+        if (!processedSuccessfully) {
+            const ticketButtons = eventPage.locator('button.ticket-type-btn');
+            if (await ticketButtons.count() > 0) {
+                const tickets = await ticketButtons.evaluateAll((buttons) => buttons.map((b) => ({
+                    name: b.querySelector('.name')?.textContent?.trim() || '',
+                    // Sold out (or otherwise unavailable) tickets are disabled buttons
+                    available: !(b as HTMLButtonElement).disabled,
+                    // The price has no fixed element: read "Free", "$99.00", "S$25", "€10", "25 EUR"... from the button text
+                    price: ((b as HTMLElement).innerText || '').match(/\b(?:free|gratuit)\b|(?:[$€£¥]|\b[A-Z]{1,3}\$)\s?\d[\d,.]*|\b\d[\d,.]*\s?(?:[$€£¥]|USD|EUR|GBP|SGD|CHF)\b/i)?.[0] || '',
+                })));
+                console.log(`Found ticket picker: ${tickets.map((t) => `"${t.name}" (${t.price || 'no price found'}${t.available ? '' : ', unavailable'})`).join(', ')}`);
+                // "Free", or an amount with no non-zero digit ("$0"). No price found counts as paid: picking a paid
+                // ticket leads to a checkout.
+                const freeTickets = tickets.map((t, index) => ({ ...t, index }))
+                    .filter((t) => t.available && (/free|gratuit/i.test(t.price) || (/\d/.test(t.price) && !/[1-9]/.test(t.price))));
+                if (freeTickets.length === 0) {
+                    console.log('  No free ticket available (paid or sold out). Skipping event.');
+                    eventStatus = 'Skipped (No free ticket available)';
+                    processedSuccessfully = true;
+                } else {
+                    const chosenName = freeTickets.length === 1
+                        ? freeTickets[0].name
+                        : await chooseBestFreeTicketLLM(freeTickets.map((t) => t.name), profileData, config);
+                    const chosen = freeTickets.find((t) => t.name === chosenName) ?? freeTickets[0];
+                    const ticketButton = ticketButtons.nth(chosen.index);
+                    // Multi-ticket pickers have a +/- count selector; the enabled count button is "+"
+                    const plusButton = ticketButton.locator('.count-button[aria-disabled="false"]').last();
+                    if (await plusButton.count() > 0) {
+                        await clickEventButton(eventPage, plusButton);
+                    } else if (!/\bselected\b/.test(await ticketButton.getAttribute('class') || '')) {
+                        await clickEventButton(eventPage, ticketButton);
+                    }
+                    await eventPage.waitForTimeout(500);
+                    console.log(`  Selected free ticket "${chosen.name}".`);
+                    chosenTicket = chosen.name;
+                }
+            }
+        }
+
         // --- 4. If still not processed, check Primary Button --- 
         // Renumbered from 4, but logic remains.
         if (!processedSuccessfully) {
@@ -216,37 +299,59 @@ export async function processEventPage(
                 console.log(`Found primary button with text: "${buttonText}"`);
 
                 // Use only English button texts
-                if (buttonText.includes('Register') || buttonText.includes('Apply') || buttonText.includes("Ask to Join") || buttonText.includes("Request to Join") || buttonText.includes("Accept Invite")) {
-                    console.log('Attempting registration/application...');
-                    await primaryButton.click({ timeout: 10000 });
-                    modalData = await handleModal(eventPage, config);
-                    eventStatus = modalData ? 'Registered/Applied (Modal Submitted)' : 'Modal Processing Failed';
-                    processedSuccessfully = !!modalData;
-                } else if (buttonText.includes('Join Waitlist')) {
-                    // Revert to checking interactability via trial click ONLY
-                    console.log('Checking interactability of "Join Waitlist" button...');
-                    try {
-                        // Trial run: Check if clickable
-                        await primaryButton.click({ trial: true });
-                        
-                        // If trial succeeds, proceed with actual click
-                        console.log('  Button is interactable. Attempting to join waitlist...');
-                        await primaryButton.click({ timeout: 10000 }); // Actual click
-                        await eventPage.waitForTimeout(1500); 
-                        console.log('  Clicked "Join Waitlist" button and waited briefly.');
+                if (await primaryButton.isDisabled()) {
+                    console.log(`Primary button "${buttonText}" is disabled (sold out, closed or needs a paid ticket). Skipping.`);
+                    eventStatus = `Skipped (Disabled Button: "${buttonText}")`;
+                    processedSuccessfully = true;
+                } else if (/1-click|one[- ]click/i.test(buttonText)) {
+                    console.log('Attempting 1-click registration...');
+                    await clickEventButton(eventPage, primaryButton);
+                    attempted = true;
+                    // Some one-click buttons still open a short confirmation form
+                    const modalAppeared = await eventPage.waitForSelector(modalSelector, { state: 'visible', timeout: 5000 }).then(() => true, () => false);
+                    if (modalAppeared) {
+                        modalData = await handleModal(eventPage, config, profileData);
+                        processedSuccessfully = !!modalData;
+                    } else {
+                        await eventPage.waitForTimeout(2500);
                         processedSuccessfully = true;
-                        eventStatus = 'Joined Waitlist (Clicked Button)';
-
-                    } catch (e) {
-                        // If trial fails, assume already waitlisted
-                        console.log('  "Join Waitlist" button not immediately interactable (likely obscured/already waitlisted).');
-                        processedSuccessfully = true;
-                        eventStatus = 'On Waitlist (Button Not Interactable)';
                     }
+                    eventStatus = processedSuccessfully ? 'Registered (1-Click)' : 'Modal Processing Failed (1-Click)';
+                } else if (/Register|Apply|Ask to Join|Request to Join|Accept Invite|Get Ticket/.test(buttonText)) {
+                    console.log('Attempting registration/application...');
+                    await clickEventButton(eventPage, primaryButton);
+                    attempted = true;
+                    // Usually opens the registration form; some events register right away
+                    const modalAppeared = await eventPage.waitForSelector(modalSelector, { state: 'visible', timeout: 5000 }).then(() => true, () => false);
+                    if (modalAppeared) {
+                        modalData = await handleModal(eventPage, config, profileData);
+                        processedSuccessfully = !!modalData;
+                    } else {
+                        await waitOutCloudflareChallenge(eventPage, config);
+                        await eventPage.waitForTimeout(2500);
+                        processedSuccessfully = true;
+                    }
+                    eventStatus = processedSuccessfully ? 'Registered/Applied' : 'Modal Processing Failed';
+                } else if (buttonText.includes('Join Waitlist')) {
+                    console.log('Attempting to join the waitlist...');
+                    await clickEventButton(eventPage, primaryButton);
+                    attempted = true;
+                    // Most waitlists open the same registration form as Register (questions, then Turnstile on submit)
+                    const modalAppeared = await eventPage.waitForSelector(modalSelector, { state: 'visible', timeout: 5000 }).then(() => true, () => false);
+                    if (modalAppeared) {
+                        modalData = await handleModal(eventPage, config, profileData);
+                        processedSuccessfully = !!modalData;
+                    } else {
+                        await waitOutCloudflareChallenge(eventPage, config);
+                        await eventPage.waitForTimeout(2500);
+                        processedSuccessfully = true;
+                    }
+                    eventStatus = processedSuccessfully ? 'Joined Waitlist' : 'Modal Processing Failed (Waitlist)';
                 } else if (buttonText.includes('1-click') || buttonText.includes('RSVP in one click')) {
                      console.log('Attempting 1-click registration...');
                      try {
-                         await primaryButton.click({ timeout: 10000 });
+                         await clickEventButton(eventPage, primaryButton);
+                         attempted = true;
                          // Add a short pause after clicking
                          await page.waitForTimeout(2500); // Wait 2.5 seconds for action to complete
                          console.log('1-click registration completed (assumed success after click).');
@@ -260,12 +365,16 @@ export async function processEventPage(
                 } else {
                     console.log(`Unknown primary button text: "${buttonText}". Cannot process.`);
                     eventStatus = `Skipped (Unknown Button: "${buttonText}")`;
-                    processedSuccessfully = true;
+                    processedSuccessfully = false;
                 }
+            } else if (await eventPage.getByText(/^Registration Closed$/).first().isVisible().catch(() => false)) {
+                console.log('Registration is closed for this event. Skipping.');
+                processedSuccessfully = true;
+                eventStatus = 'Skipped (Registration Closed)';
             } else {
-                 // Primary button NOT visible 
+                 // Primary button NOT visible
                  console.log('No visible primary action button found (Register/Join Waitlist/etc.). Assuming already registered or waitlisted.');
-                 processedSuccessfully = true; 
+                 processedSuccessfully = true;
                  eventStatus = 'Registered/Waitlisted (No Button Found)';
             }
         }
@@ -277,14 +386,43 @@ export async function processEventPage(
             processedSuccessfully = true;
         }
 
+        // A failed step may be a Cloudflare challenge that appeared after clicking (e.g. on submit)
+        if (!processedSuccessfully) await waitOutCloudflareChallenge(eventPage, config);
+
+        // The form was a checkout (paid ticket): nothing was submitted, it's a skip
+        if (pagesWithPaidRegistration.has(eventPage)) {
+            processedSuccessfully = true;
+            attempted = false;
+            eventStatus = 'Skipped (Paid registration)';
+        }
+
+        // What's on screen can mislead (a form that stays open after a successful submit, or a click that
+        // did nothing): Luma's own status decides. A form left for a manual submit isn't submitted yet.
+        if (attempted && !pagesAwaitingManualSubmit.has(eventPage)) {
+            const status = await lumaRegistrationStatus(eventPage);
+            if (status && SUBMITTED_STATUSES.includes(status)) {
+                if (!processedSuccessfully) console.log(`  Luma has the registration anyway (${status}).`);
+                processedSuccessfully = true;
+                eventStatus = `Registered (${status})`;
+            } else if (status === null || status) {
+                console.log(`\x1b[31m  Luma has no registration for this event${status ? ` (status: ${status})` : ''}.\x1b[0m`);
+                processedSuccessfully = false;
+                eventStatus = `${eventStatus} (not registered on Luma)`;
+            } else {
+                console.log('  Could not read the registration status from Luma, keeping the result as is.');
+            }
+        }
         overallSuccess = processedSuccessfully;
         console.log(`  Registration attempt for ${eventUrl} completed. Success: ${overallSuccess}`);
     } catch (error) {
+        if (error instanceof CloudflareChallengeError) throw error;
+        if (isBrowserClosedError(error)) throw new BrowserClosedError();
         console.error(`\x1b[31m  Error processing event ${eventUrl}:\x1b[0m`, error);
         overallSuccess = false;
     } finally {
         console.log(`--- Finished processing ${eventUrl} ---`);
-        if (eventPage && !eventPage.isClosed()) {
+        // A filled form waiting for a manual submit stays open; the runner hands it to the user
+        if (eventPage && !eventPage.isClosed() && !pagesAwaitingManualSubmit.has(eventPage)) {
             await eventPage.close();
         }
     } 

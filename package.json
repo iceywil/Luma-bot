@@ -3,11 +3,18 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-	"start": "npx ts-node src/api_flow/main_api.ts",
+    "server": "npx ts-node src/api_flow/server.ts",
+    "start": "npx ts-node src/api_flow/main_api.ts",
     "api": "npx ts-node src/api_flow/main_api.ts",
     "selector": "npx ts-node src/old_selector_flow/main.ts",
     "test": "npx ts-node src/old_selector_flow/test_main.ts",
-    "prompt-open-urls": "npx ts-node src/cli/promptOpenTabsCli.ts"
+    "prompt-open-urls": "npx ts-node src/cli/promptOpenTabsCli.ts",
+    "get-cookies": "npx ts-node src/cli/getCookies.ts",
+    "collect-questions": "npx ts-node src/cli/collectQuestions.ts",
+    "leak-test": "npx ts-node src/cli/leakTest.ts",
+    "extract-guests": "npx ts-node src/cli/extractGuests.ts",
+    "clean-leads": "npx ts-node src/cli/cleanLeads.ts",
+    "enrich-leads": "npx ts-node src/cli/enrichLeads.ts"
   },
   "keywords": [],
   "author": "",
@@ -18,6 +25,7 @@
     "@types/node": "^22.14.0",
     "axios": "^1.9.0",
     "dotenv": "^16.4.7",
+    "patchright": "^1.63.0",
     "playwright": "^1.51.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"

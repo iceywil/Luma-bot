@@ -2,7 +2,31 @@ import { Page, Locator } from 'playwright';
 import readline from 'readline/promises';
 import { readProfile } from '../api_flow/config';
 import { callLLMBatched, LLMFieldRequest as OriginalLLMFieldRequest } from '../api_flow/llm'; // Aliasing original
-import { findFieldByLabel } from './domUtils';
+import { findFieldByLabel, humanClick } from './domUtils';
+import { CloudflareChallengeError, isCloudflareChallenge, waitOutCloudflareChallenge } from './cloudflare';
+import { BrowserClosedError, isBrowserClosedError } from './browserClosed';
+import * as fs from 'fs/promises';
+import path from 'path';
+
+const SUBMISSIONS_LOG = path.resolve(__dirname, '../../logs/selector_submissions.jsonl');
+
+// MANUAL_SUBMIT=true: forms are filled but not submitted. Their tabs are left open here for the user to
+// submit (and solve the captcha) themselves.
+export const pagesAwaitingManualSubmit = new WeakSet<Page>();
+
+// Registration forms that turned out to be a checkout (card field, Stripe, "Pay" button): left untouched, and
+// the event counts as skipped (paid), not failed
+export const pagesWithPaidRegistration = new WeakSet<Page>();
+
+// Appends one line per modal form to logs/selector_submissions.jsonl so questions and answers can be reviewed.
+async function logModalSubmission(record: Record<string, unknown>): Promise<void> {
+    try {
+        await fs.mkdir(path.dirname(SUBMISSIONS_LOG), { recursive: true });
+        await fs.appendFile(SUBMISSIONS_LOG, JSON.stringify(record) + '\n');
+    } catch (error: any) {
+        console.warn('  Could not write selector submission log:', error.message);
+    }
+}
 
 // Extend LLMFieldRequest to include isCustomTrigger
 interface LLMFieldRequest extends OriginalLLMFieldRequest {
@@ -18,9 +42,11 @@ function sanitizeIdentifierForLLM(identifier: string): string {
     const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F018}\u{1F251}]/gu;
     let cleaned = identifier.replace(emojiRegex, '');
     // Remove or replace other problematic symbols, normalize spaces
-    cleaned = cleaned.replace(/[^a-zA-Z0-9_\s\?\(\)\-\/\.:,]/g, ''); // Initial aggressive cleaning
+    // Letters and digits of any script are kept: an ASCII-only filter turned Chinese labels (公司, 职位...)
+    // into "", so several fields shared one empty name and the wrong field got filled
+    cleaned = cleaned.replace(/[^\p{L}\p{N}_\s\?\(\)\-\/\.:,]/gu, ''); // Initial aggressive cleaning
     // Remove trailing non-alphanumeric characters (e.g., trailing ?, :, etc.) before final trim
-    cleaned = cleaned.replace(/[^a-zA-Z0-9_\s\(\)]+$/g, '');
+    cleaned = cleaned.replace(/[^\p{L}\p{N}_\s\(\)]+$/gu, '');
     cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Consolidate multiple spaces and trim
     // console.log(`[Sanitize DEBUG] Original: "${identifier}" -> Cleaned: "${cleaned}"`);
     return cleaned;
@@ -31,8 +57,8 @@ function sanitizeIdentifierForLLM(identifier: string): string {
 const modalSelector = 'div.lux-overlay.glass'; 
 const checkboxContainerSelector = 'div.lux-checkbox'; 
 const checkboxInputSelector = 'input[type="checkbox"]'; 
-const checkboxLabelSelector = 'label.text-label > div'; 
-const checkboxClickTargetSelector = 'label.checkbox-icon'; // Preferred click target
+const checkboxLabelSelector = '.text-label > div'; // div.text-label in the current Luma markup, label.text-label before
+const checkboxClickTargetSelector = '.checkbox-icon'; // Preferred click target (span now, label before)
 const submitButtonSelector = 'div.lux-collapse.shown > button';
 
 // ** PLACEHOLDERS - VERIFY THESE BY INSPECTING THE DROPDOWN **
@@ -43,9 +69,11 @@ const customSelectDropdownSelector = 'div.lux-menu';
 const customSelectOptionSelector = 'div.lux-menu-item'; 
 
 // Add selectors for the Terms Modal (copied from eventProcessor.ts)
-const termsModalSelector = 'div.lux-modal:has-text("Accept Terms")';
+// The host's terms, shown when ticking "I agree to the event terms": either a signature box with a
+// "Sign & Accept" button, or just an "Accept Terms" button. Found by those buttons, the title varies.
+const termsModalSelector = 'div.lux-modal:has(button:has-text("Sign & Accept")), div.lux-modal:has(button:has-text("Accept Terms"))';
 const termsModalTextareaSelector = 'textarea.lux-naked-input';
-const termsModalSubmitButtonSelector = 'button:has-text("Sign & Accept")';
+const termsModalSubmitButtonSelector = 'button:has-text("Sign & Accept"), button:has-text("Accept Terms")';
 
 // --- Add Helper Function for Fallback --- 
 async function attemptFirstOptionFallback(
@@ -158,7 +186,7 @@ async function attemptTextNAFallback(
 }
 // --- End Text Fallback Helper ---
 
-export async function handleModal(page: Page, config: Record<string, string>): Promise<Record<string, string | string[] | null> | null> {
+export async function handleModal(page: Page, config: Record<string, string>, profile?: Record<string, string>): Promise<Record<string, string | string[] | null> | null> {
     // --- Define rl and modal outside try block for finally/catch access ---
     let rl: readline.Interface | null = null;
     let modal: Locator | null = null;
@@ -167,6 +195,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
     const llmUpdates: Record<string, string | string[] | null> = {};
     const fieldsToAskLLM: LLMFieldRequest[] = [];
     const selectorCache: Record<string, string> = {};
+    let llmAnswers: Record<string, unknown> = {};
+    let failureReason: string | null = null;
 
     try {
         // --- Initialize rl and modal inside try block ---
@@ -176,7 +206,28 @@ export async function handleModal(page: Page, config: Record<string, string>): P
         await page.waitForSelector(modalSelector, { state: 'visible', timeout: 15000 }); 
         console.log('Popup modal detected.');
         modal = page.locator(modalSelector); // Assign to the outer scoped variable
-        const profileData = await readProfile();
+        const profileData = profile ?? await readProfile();
+
+        // A paid ticket's form asks for a card: never fill or submit a checkout. Checked again after the fields
+        // are read and right before submitting: the form can load its fields (the card one too) a few
+        // seconds after it opens.
+        const findPaymentSign = () => modal!.evaluate((m) => {
+            const labels = Array.from(m.querySelectorAll('label, .label, [class*="label"]')).map((el) => el.textContent || '');
+            const cardLabel = labels.find((text) => /credit|debit|card number|payment method|billing/i.test(text));
+            if (cardLabel) return `field "${cardLabel.trim().slice(0, 60)}"`;
+            if (m.querySelector('iframe[src*="stripe"], iframe[name^="__privateStripe"], [class*="StripeElement"]')) return 'Stripe payment frame';
+            const payButton = Array.from(m.querySelectorAll('button')).find((b) => /^\s*pay\b/i.test(b.textContent || ''));
+            if (payButton) return `button "${(payButton.textContent || '').trim().slice(0, 40)}"`;
+            return null;
+        }).catch(() => null);
+        const isPaidRegistration = async (when: string) => {
+            const sign = await findPaymentSign();
+            if (!sign) return false;
+            console.log(`\x1b[33mThis registration asks for a payment (${sign}, seen ${when}). Paid ticket: skipping, nothing submitted.\x1b[0m`);
+            pagesWithPaidRegistration.add(page);
+            return true;
+        };
+        if (await isPaidRegistration('when the form opened')) return null;
         
         // --- Pass 1: Process Inputs/Selects/Textareas & Collect for LLM ---
         console.log('--- Pass 1: Identifying & Processing Form Fields ---');
@@ -342,7 +393,8 @@ export async function handleModal(page: Page, config: Record<string, string>): P
 
             const isMandatoryField = rawIdentifier.trim().endsWith('*'); // Renamed from isMandatory to avoid conflict
             const fieldIdentifier = rawIdentifier.replace(/\s*\*$/, '').trim();
-            const sanitizedIdentifier = sanitizeIdentifierForLLM(fieldIdentifier); // Sanitize here
+            // Never empty (a label of only symbols): fields sharing one empty name get each other's answers
+            const sanitizedIdentifier = sanitizeIdentifierForLLM(fieldIdentifier) || fieldName || `field_${i}`; // Sanitize here
 
             console.log(`[Pass 1 DEBUG] Field Details: Index=${i}, Tag="${tagName}", FieldID="${fieldId}", Name="${fieldName}", Label="${labelText.trim()}", InputPlaceholder="${fieldPlaceholder}", ExtractedSpanText="${textFromDirectSpanOrChildSpan}", EffectivePlaceholder="${placeholderTextToUse}", RawIdentifier="${fieldIdentifier}", SanitizedIdentifier="${sanitizedIdentifier}"`);
             console.log(`Processing Field: "${sanitizedIdentifier}" (Tag: ${tagName}, Determined Type: ${fieldType})${isMandatoryField ? ' [Mandatory]' : ''}${isCustomSelect ? ' [Custom Select Trigger]' : ''}`);
@@ -410,12 +462,20 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                     options = await dropdown.locator(customSelectOptionSelector).allTextContents();
                     options = options.map(opt => opt.trim()).filter(Boolean); 
                     console.log(`  Extracted options: [${options?.join(', ') ?? ''}]`);
-                    
-                    // Close dropdown
-                    await page.locator('body').click({ position: { x: 0, y: 0 }, delay: 100, force: true }); 
-                    await dropdown.waitFor({ state: 'hidden', timeout: 2000 }); 
-                    console.log('  Closed custom select dropdown after extraction.');
-                    await page.waitForTimeout(200); 
+
+                    // Close dropdown. Separate from the extraction: a dropdown slow to close must not lose the
+                    // options already read (the field would then be answered blind and left empty).
+                    try {
+                        await page.locator('body').click({ position: { x: 0, y: 0 }, delay: 100, force: true });
+                        await dropdown.waitFor({ state: 'hidden', timeout: 2000 }).catch(async () => {
+                            await page.locator('body').click({ position: { x: 0, y: 0 }, delay: 100, force: true });
+                            await dropdown.waitFor({ state: 'hidden', timeout: 3000 });
+                        });
+                        console.log('  Closed custom select dropdown after extraction.');
+                    } catch {
+                        console.warn('  Custom select dropdown did not close after extraction, keeping its options.');
+                    }
+                    await page.waitForTimeout(200);
                 } catch (optionError) {
                      console.error('Failed to extract custom select options:', optionError);
                      options = []; 
@@ -445,6 +505,7 @@ export async function handleModal(page: Page, config: Record<string, string>): P
         }
         
         // --- Pass 2: Process Checkboxes & Collect for LLM (Restored) ---
+        if (await isPaidRegistration('after reading the fields')) return null;
         console.log('\n--- Pass 2: Processing Checkboxes & Collecting for LLM (Modal Context) ---');
         const checkboxContainers = modal.locator(checkboxContainerSelector);
         const checkboxCount = await checkboxContainers.count();
@@ -470,7 +531,14 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                 console.log('  Mandatory checkbox detected. Attempting to check...');
                 try {
                     await clickTarget.waitFor({ state: 'visible', timeout: 5000 });
-                    await clickTarget.click({ timeout: 10000 }); 
+                    // Sometimes never "stable" for Playwright (the form still moving): bring it into view and
+                    // retry, then force the click as a last resort (no Escape: it would close the form)
+                    await clickTarget.click({ timeout: 5000 }).catch(async () => {
+                        console.warn('  Checkbox not clickable yet, retrying...');
+                        await clickTarget.scrollIntoViewIfNeeded().catch(() => {});
+                        await page.waitForTimeout(500);
+                        await clickTarget.click({ timeout: 5000 }).catch(() => clickTarget.click({ force: true, timeout: 5000 }));
+                    });
 
                     if (await checkboxInput.isChecked()) {
                         console.log('  Checked mandatory checkbox successfully (Immediate Check).');
@@ -487,19 +555,22 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                              
                              // We already read profileData earlier in handleModal
                              const fullName = profileData['Name']; 
+                             const textarea = termsModal.locator(termsModalTextareaSelector);
+                             const needsSignature = await textarea.count() > 0;
                              
-                             if (!fullName) {
+                             if (needsSignature && !fullName) {
                                  console.error('\x1b[31m  Cannot sign terms: Full Name not found in profile.txt (expected key: Name).\x1b[0m');
                                  success = false; // Mark overall modal submission as failed
                                  handled = false; // Checkbox step failed
                              } else {
-                                 const textarea = termsModal.locator(termsModalTextareaSelector);
-                                 const submitButton = termsModal.locator(termsModalSubmitButtonSelector);
+                                 const submitButton = termsModal.locator(termsModalSubmitButtonSelector).first();
                                  
-                                 console.log(`  Filling signature with name: "${fullName}"`);
-                                 await textarea.fill(fullName);
+                                 if (needsSignature) {
+                                     console.log(`  Filling signature with name: "${fullName}"`);
+                                     await textarea.fill(fullName);
+                                 }
                                  await submitButton.click({ timeout: 5000 });
-                                 console.log('  Clicked "Sign & Accept". Waiting for terms modal to close...');
+                                 console.log(`  Clicked "${(await submitButton.textContent().catch(() => ''))?.trim() || 'accept'}". Waiting for terms modal to close...`);
                                  await termsModal.waitFor({ state: 'hidden', timeout: 5000 });
                                  console.log('  Terms modal closed successfully.');
                                  // Assume checkbox is implicitly handled by signing terms
@@ -584,6 +655,7 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                  }
             }
             // --- End Revised Logic ---
+            llmAnswers = Object.fromEntries(llmResponseMap);
 
         } else {
             console.log("No fields needed LLM input based on initial scan.");
@@ -667,6 +739,12 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                     }
                     // --- END NEW STRATEGY ---
 
+                    // Last resort: the element Pass 1 found. The label lookup uses the sanitized label ("Whats"
+                    // for "What's"...), so it can miss a field that has no id either (seen on a textarea)
+                    if (!freshLocator && locator && await locator.isVisible({ timeout: 1000 }).catch(() => false)) {
+                        console.log(`  [Pass 3] Using the field found in Pass 1 for "${identifier}".`);
+                        freshLocator = locator;
+                    }
 
                     if (!freshLocator) {
                         console.error(`\x1b[31m  [Pass 3] Could not obtain locator for field "${identifier}". Skipping LLM application.\x1b[0m`);
@@ -794,6 +872,21 @@ export async function handleModal(page: Page, config: Record<string, string>): P
                                                 await page.locator('body').click({ position: { x: 0, y: 0 }, delay: 100, force: true });
                                                 await dropdown.waitFor({ state: 'hidden', timeout: 2000 });
                                             } catch { console.warn(`    Could not confirm custom select dropdown for "${identifier}" closed.`); }
+                                            // The click doesn't always take (seen on long forms, then Luma refuses the form as
+                                            // "required"): an input trigger shows the choice as its value, so pick again once if empty
+                                            const stillEmpty = () => freshLocator.evaluate((el) => el.tagName === 'INPUT' && !(el as HTMLInputElement).value).catch(() => false);
+                                            if (await stillEmpty()) {
+                                                console.warn(`    "${identifier}" still shows no value, selecting "${suggestedOption}" again.`);
+                                                await freshLocator.scrollIntoViewIfNeeded().catch(() => {});
+                                                await freshLocator.click({ timeout: 5000 });
+                                                await dropdown.waitFor({ state: 'visible', timeout: 5000 });
+                                                await optionToClick.click({ timeout: 5000 });
+                                                await page.waitForTimeout(300);
+                                                if (await stillEmpty()) {
+                                                    console.warn(`    "${identifier}" still empty after a second try.`);
+                                                    applySuccess = false;
+                                                }
+                                            }
                                         } else {
                                             const availableOptions = await dropdown.locator(customSelectOptionSelector).allTextContents();
                                             console.warn(`    Option "${suggestedOption}" not visible in custom select "${identifier}". Available: [${availableOptions.join(', ')}]`);
@@ -933,31 +1026,97 @@ export async function handleModal(page: Page, config: Record<string, string>): P
 
         console.log('\n--- Finished processing modal fields ---');
 
+        if (config['MANUAL_SUBMIT'] === 'true') {
+            console.log('Form filled. Leaving the submit to you (MANUAL_SUBMIT=true).');
+            pagesAwaitingManualSubmit.add(page);
+            success = true;
+            return filledModalData;
+        }
+
         // --- Submit & Update Profile (Still inside main try block) --- 
+        if (await isPaidRegistration('before submitting')) return null;
         console.log('\nAttempting to submit form...');
         const submitButton = modal!.locator(submitButtonSelector).first(); // Use modal!
         if (await submitButton.isVisible() && await submitButton.isEnabled()) {
-            await submitButton.click();
+            await humanClick(page, submitButton);
             console.log('Clicked modal submit button. Waiting for modal to close...');
-            try {
-                 await modal!.waitFor({ state: 'hidden', timeout: 7000 }); // Use modal!
+            const modalClosed = (timeout: number) => modal!.waitFor({ state: 'hidden', timeout }).then(() => true, () => false);
+            let closed = await modalClosed(7000);
+            // Luma can take longer to accept the form: while the submit button is still busy (disabled or
+            // spinning), give it more time instead of calling it a failure
+            const submitBusy = async () =>
+                (await submitButton.isDisabled().catch(() => false)) ||
+                (await submitButton.locator('.spinner, [class*="spin"], [class*="loader"], [class*="loading"]').count().catch(() => 0)) > 0;
+            if (!closed && await submitBusy()) {
+                console.log('  Submit still in progress, waiting longer...');
+                closed = await modalClosed(25000);
+            }
+            // Luma shows a Cloudflare captcha on submit: wait for the user to solve it (or stop the run)
+            if (!closed && await isCloudflareChallenge(page)) {
+                await waitOutCloudflareChallenge(page, config);
+                closed = await modalClosed(10000);
+                // If Luma didn't resubmit by itself after the captcha, submit again
+                if (!closed && await submitButton.isVisible() && await submitButton.isEnabled()) {
+                    console.log('Resubmitting after the captcha...');
+                    await humanClick(page, submitButton);
+                    closed = await modalClosed(10000);
+                    if (!closed) await waitOutCloudflareChallenge(page, config);
+                    closed = closed || await modalClosed(10000);
+                }
+            }
+            if (closed) {
                 console.log('Modal closed. Submission presumed successful.');
                 success = true; // Mark as successful
-            } catch (closeError) {
+            } else {
                  console.error('\x1b[31mModal did not close after submitting. Submission might have failed.\x1b[0m');
+                 failureReason = 'modal did not close after submit';
+                 // Capture what the form shows (validation errors) to debug why Luma refused it
+                 try {
+                     const shownErrors = await modal!.evaluate((m) =>
+                         Array.from(m.querySelectorAll('[class*="error"], [class*="invalid"], [role="alert"]'))
+                             .map((el) => (el.textContent || '').trim())
+                             .filter(Boolean)
+                     );
+                     const screenshotPath = path.join(path.dirname(SUBMISSIONS_LOG), 'screens', `${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
+                     await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+                     await page.screenshot({ path: screenshotPath, fullPage: true });
+                     console.error(`  Form errors shown: ${JSON.stringify(shownErrors)}. Screenshot: ${screenshotPath}`);
+                     failureReason += ` | errors: ${JSON.stringify(shownErrors)} | screenshot: ${screenshotPath}`;
+                 } catch (captureError: any) {
+                     console.warn('  Could not capture form errors:', captureError.message);
+                 }
             }
         } else {
             console.log('Could not find or interact with the modal submit button (hidden/disabled?).');
+            failureReason = 'submit button hidden or disabled';
         }
     // --- End Main Try Block --- 
     } catch (popupError) {
+        if (isBrowserClosedError(popupError)) {
+            failureReason = 'browser closed';
+            throw new BrowserClosedError();
+        }
+        if (popupError instanceof CloudflareChallengeError) {
+            failureReason = popupError.message;
+            throw popupError; // the finally block still logs the submission
+        }
         if (popupError instanceof Error && popupError.message?.includes('waitForSelector')) {
             console.log('No popup modal detected within timeout, or modal selector is incorrect.');
         } else {
             console.error('\x1b[31mError processing popup/form: [0m', popupError);
         }
         success = false; // Ensure success is false on error
+        failureReason = popupError instanceof Error ? popupError.message.split('\n')[0] : String(popupError);
     } finally {
+        await logModalSubmission({
+            at: new Date().toISOString(),
+            account: config['ACCOUNT_ID'] || 'local',
+            url: page.url(),
+            result: pagesAwaitingManualSubmit.has(page) ? 'filled, left for manual submit' : success ? 'submitted' : `failed: ${failureReason ?? 'unknown'}`,
+            questions: fieldsToAskLLM.map(f => ({ label: f.identifier, type: f.type, required: f.isMandatory, options: f.options })),
+            llm_answers: llmAnswers,
+            filled: filledModalData,
+        });
         if (rl) {
             rl.close(); // Close rl if it was initialized
         }

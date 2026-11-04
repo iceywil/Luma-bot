@@ -1,0 +1,7 @@
+node_modules
+config.txt
+.env
+test.txt
+playwright_chrome_profile
+src/_tmp
+chrome_profiles

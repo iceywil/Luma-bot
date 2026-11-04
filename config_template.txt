@@ -1,0 +1,22 @@
+# Copy this file to config.txt and fill it in. config.txt is gitignored (never committed).
+
+# Calendar(s) and/or direct event link(s), comma-separated. Both kinds can be mixed.
+#   calendar : https://luma.com/token2049   (registers to every event on it)
+#   event    : https://luma.com/px5f2j4k    (registers to just that event)
+EVENT_CALENDAR_URL=https://luma.com/your-calendar
+
+# Claude token for answering host questions and picking tickets. Run: claude setup-token
+CLAUDE_CODE_OAUTH_TOKEN=
+# Optional, default "sonnet"
+CLAUDE_MODEL=sonnet
+
+# Browser to drive (supported: chrome, brave, arc). Default chrome.
+BROWSER=chrome
+
+# One per account. Value = your luma.auth-session-key cookie (or the full Cookie header).
+# luma.com (logged in) > DevTools > Application > Cookies > luma.auth-session-key
+COOKIES_ACCOUNT_ONE=
+COOKIES_ACCOUNT_TWO=
+
+# Optional: timezone sent with registrations
+# TIMEZONE=Europe/Paris

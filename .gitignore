@@ -4,3 +4,18 @@
 /src/old_selector_flow/playwright_chrome_profile
 selector_cache.json
 config.txt
+/chrome_profiles
+/questions
+/logs
+
+# Debug dump of the last event page (a logged-in Luma page)
+/test.txt
+# Scratch scripts and screenshots
+/src/_tmp
+
+# Extracted guest lists (personal data)
+/output
+
+# Per-account profiles hold personal data; keep only the example tracked
+/profiles/*
+!/profiles/example.txt

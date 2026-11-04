@@ -1,5 +1,46 @@
 import { Page, Locator } from 'playwright';
 
+// Last mouse position per page: Playwright doesn't expose it
+const mousePositions = new WeakMap<Page, { x: number; y: number }>();
+const randomIn = (min: number, max: number) => min + Math.random() * (max - min);
+
+/**
+ * Clicks like a person: the cursor travels on a slight curve, easing in and out, to a random point inside
+ * the element, rests a moment, then presses and releases. locator.click() jumps straight to the center
+ * with no mousemove before it, which bot checks (Turnstile) can see.
+ */
+export async function humanClick(page: Page, locator: Locator): Promise<void> {
+    await locator.scrollIntoViewIfNeeded();
+    const box = await locator.boundingBox();
+    if (!box) throw new Error('Element to click has no bounding box (hidden?)');
+    await humanClickAt(page, { x: box.x + box.width * randomIn(0.3, 0.7), y: box.y + box.height * randomIn(0.3, 0.7) });
+}
+
+// humanClick at a point of the page (CSS pixels from the top-left of the viewport)
+export async function humanClickAt(page: Page, target: { x: number; y: number }): Promise<void> {
+    // First move on this page: start somewhere above-left of the target, where the cursor plausibly was
+    const start = mousePositions.get(page) ?? { x: Math.max(5, target.x - randomIn(150, 400)), y: Math.max(5, target.y - randomIn(80, 300)) };
+    // Quadratic curve whose control point sits off the straight line
+    const control = {
+        x: (start.x + target.x) / 2 + randomIn(-1, 1) * Math.abs(target.y - start.y) * 0.4,
+        y: (start.y + target.y) / 2 + randomIn(-1, 1) * Math.abs(target.x - start.x) * 0.4,
+    };
+    const steps = Math.round(randomIn(18, 32));
+    for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        const x = (1 - eased) ** 2 * start.x + 2 * (1 - eased) * eased * control.x + eased ** 2 * target.x;
+        const y = (1 - eased) ** 2 * start.y + 2 * (1 - eased) * eased * control.y + eased ** 2 * target.y;
+        await page.mouse.move(x, y);
+        await page.waitForTimeout(randomIn(6, 18));
+    }
+    mousePositions.set(page, target);
+    await page.waitForTimeout(randomIn(120, 350));
+    await page.mouse.down();
+    await page.waitForTimeout(randomIn(60, 140));
+    await page.mouse.up();
+}
+
 /**
  * Clicks an element if it is visible and enabled.
  * @param locator The Playwright Locator for the element.
@@ -42,11 +83,21 @@ export async function clickIfPossible(locator: Locator, description: string, tim
  */
 export async function findFieldByLabel(modalLocator: Locator, labelText: string, fieldTypeHint?: 'text' | 'select' | 'multiselect'): Promise<Locator | null> {
     console.log(`[findFieldByLabel] Searching for field associated with label containing text: "${labelText}"`);
+    // An empty text is "contained" in every label: it would return the form's first field
+    if (!labelText.trim()) return null;
 
     try {
         // Find the label that contains the text. This is our primary starting point.
         const labelSelector = `label:has-text("${labelText.replace(/"/g, '\\"')}")`;
-        const label = modalLocator.locator(labelSelector).first();
+        const labels = modalLocator.locator(labelSelector);
+        let label = labels.first();
+        // "contains" also matches longer labels ("Your job title" is in "What is your job title"):
+        // when several match, take the one that is exactly this label (ignoring case, punctuation and the "*")
+        if (await labels.count() > 1) {
+            const normalize = (text: string) => text.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+            const exact = (await labels.allTextContents()).findIndex((text) => normalize(text) === normalize(labelText));
+            if (exact >= 0) label = labels.nth(exact);
+        }
 
         if (await label.isVisible({ timeout: 500 })) {
             // Strategy 1: The 'for' attribute is the most reliable method.

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDP leak test</title>
+<style>
+    body { font: 14px/1.4 -apple-system, system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p { margin: 4px 0 12px; color: #555; }
+    table { border-collapse: collapse; margin-bottom: 12px; }
+    td, th { border: 1px solid #ccc; padding: 4px 8px; text-align: left; vertical-align: top; }
+    .bad { background: #fdd; }
+    .ok { background: #dfd; }
+    iframe { width: 100%; height: 260px; border: 1px dashed #999; }
+    body.frame { margin: 8px; background: #fafafa; }
+</style>
+</head>
+<body>
+<h1 id="title"></h1>
+<p id="hint"></p>
+<table id="results"></table>
+<div id="frameSlot"></div>
+<script>
+// Each check runs every second, so a debugger that attaches after load is still caught.
+// "ever" keeps a leak visible after the debugger detaches again.
+const params = new URLSearchParams(location.search);
+const role = params.get("frame") ? "iframe" : "top";
+const tab = params.get("tab") || "unnamed";
+const ever = {};
+let blurEvents = 0;
+const costSamples = [];
+let sink;
+addEventListener("blur", () => blurEvents++);
+
+function runChecks() {
+    const r = {};
+
+    // Runtime.enable: Chrome only builds console message previews for a client listening to Runtime,
+    // which makes console calls about twice as slow. (The old trick, a getter on an error's stack, no
+    // longer fires in recent Chrome.) The runner compares this to the tab's cost before attaching.
+    // Divided by plain JS work timed right after, so a slower renderer (background tab) cancels out.
+    const sample = { x: 1, y: [1, 2, 3], z: "s".repeat(50) };
+    let start = performance.now();
+    for (let i = 0; i < 1000; i++) console.debug(sample);
+    const consoleMs = performance.now() - start;
+    start = performance.now();
+    for (let i = 0; i < 1000; i++) sink = JSON.stringify(sample) + JSON.stringify(Object.keys(sample));
+    costSamples.push(consoleMs / Math.max(performance.now() - start, 0.01));
+    if (costSamples.length > 5) costSamples.shift();
+    r.consoleCost = Number([...costSamples].sort((a, b) => a - b)[Math.floor(costSamples.length / 2)].toFixed(2));
+
+    r.webdriver = navigator.webdriver === true;
+    r.headlessUA = /HeadlessChrome/.test(navigator.userAgent);
+    r.headlessBrand = (navigator.userAgentData?.brands || []).some((b) => /headless/i.test(b.brand));
+    // Headless Chrome defaults to an 800x600 screen and a window that fills it exactly
+    r.headlessScreen = (screen.width === 800 && screen.height === 600) || (outerWidth === screen.width && outerHeight === screen.height && screen.availHeight === screen.height)
+        ? `screen ${screen.width}x${screen.height}, avail ${screen.availWidth}x${screen.availHeight}, outer ${outerWidth}x${outerHeight}`
+        : false;
+    r.noWindowChrome = typeof window.chrome === "undefined";
+    r.noPlugins = navigator.plugins.length === 0;
+    r.automationGlobals = Object.getOwnPropertyNames(window)
+        .filter((k) => /^(__pw|__playwright|playwright|\$?cdc_|__puppeteer|puppeteer|__webdriver|_selenium|callPhantom|__nightmare)/i.test(k))
+        .join(", ") || false;
+    // Focus emulation makes hasFocus() true even in a background tab
+    r.focusWhileHidden = document.hidden && document.hasFocus();
+
+    for (const [k, v] of Object.entries(r)) if (v === true || (typeof v === "string" && v)) ever[k] = true;
+    return r;
+}
+
+function render(r, frameResults) {
+    const rows = Object.keys(r).map((k) => {
+        const leak = Boolean(ever[k]);
+        const value = r[k] === false ? "no" : r[k] === true ? "YES" : r[k];
+        return `<tr class="${leak ? "bad" : "ok"}"><td>${k}</td><td>${value}</td><td>${ever[k] ? "YES" : "no"}</td></tr>`;
+    });
+    document.getElementById("results").innerHTML =
+        `<tr><th>check</th><th>now</th><th>ever</th></tr>${rows.join("")}` +
+        (frameResults ? `<tr><td colspan="3"><b>cross-site iframe:</b> consoleCost = ${frameResults.results.consoleCost}</td></tr>` : "");
+    document.getElementById("hint").textContent =
+        `visible=${!document.hidden} hasFocus=${document.hasFocus()} blurEvents=${blurEvents}. ` +
+        "consoleCost roughly doubles while a CDP client has Runtime enabled (opening DevTools does too).";
+}
+
+let lastFrameResults = null;
+addEventListener("message", (e) => { if (e.data && e.data.leakTest) lastFrameResults = e.data; });
+
+document.getElementById("title").textContent = `${role === "top" ? "CDP leak test" : "iframe"} (tab: ${tab})`;
+document.body.className = role;
+if (role === "top") {
+    // Other host, same server: a different site, so Chrome runs it out of process like Turnstile's iframe
+    const port = location.port;
+    const otherHost = location.hostname === "localhost" ? "127.0.0.1" : "localhost";
+    document.getElementById("frameSlot").innerHTML =
+        `<iframe src="http://${otherHost}:${port}/?frame=1&tab=${encodeURIComponent(tab)}"></iframe>`;
+}
+
+setInterval(() => {
+    const results = runChecks();
+    render(results, role === "top" ? lastFrameResults : null);
+    const report = { leakTest: true, tab, role, results, ever, hasFocus: document.hasFocus(), hidden: document.hidden };
+    if (role === "iframe") parent.postMessage(report, "*");
+    fetch("/report", { method: "POST", body: JSON.stringify(report) }).catch(() => {});
+}, 1000);
+</script>
+</body>
+</html>

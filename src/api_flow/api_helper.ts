@@ -244,10 +244,18 @@ export async function prepareRegistrationAnswers(
     return preparedAnswers;
 }
 
+export type RegistrationSubmission =
+    | { ok: true; data: any }
+    | { ok: false; blocked: boolean; status?: number };
+
+// Statuses meaning Luma is throttling or blocking us: 429 rate limit, 444 bot detection,
+// 403 usually a Cloudflare challenge.
+const BLOCKED_STATUSES = [403, 429, 444];
+
 /**
  * Submits the event registration via API.
  */
-export async function submitRegistration(payload: any, cookieString: string | null, eventPageUrl: string, headersOverride?: Record<string,string>): Promise<any | null> {
+export async function submitRegistration(payload: any, cookieString: string | null, eventPageUrl: string, headersOverride?: Record<string,string>): Promise<RegistrationSubmission> {
     const apiUrl = 'https://api2.luma.com/event/register';
     console.log(`Submitting registration to: ${apiUrl}`);
     // Avoid logging full payload if it's very large or contains sensitive repeated info from profile
@@ -329,33 +337,19 @@ export async function submitRegistration(payload: any, cookieString: string | nu
         console.log(`  Adding post-submission delay: ${postDelay}ms`);
         await new Promise(resolve => setTimeout(resolve, postDelay));
         
-        return response.data;
+        return { ok: true, data: response.data };
     } catch (error: any) {
         console.error('Error submitting registration:');
         if (error.response) {
             console.error('Status:', error.response.status);
-            console.error('Data:', error.response.data);
-            console.error('Headers:', error.response.headers);
+            console.error('Data:', String(typeof error.response.data === 'string' ? error.response.data : JSON.stringify(error.response.data)).substring(0, 500));
             
-            // If we get a bot detection error, add longer delay before next attempt
-            if (error.response.status === 444 || error.response.status === 429) {
-                if (error.response.status === 444) {
-                    // Bot detection - wait 1 minute
-                    const botDelay = 60000; // 1 minute
-                    console.warn(`  Bot detection confirmed (status 444). Waiting 1 minute: ${botDelay}ms`);
-                    await new Promise(resolve => setTimeout(resolve, botDelay));
-                } else {
-                    // Rate limiting - shorter delay
-                    const rateDelay = Math.floor(Math.random() * 10000) + 15000; // 15-25 seconds
-                    console.warn(`  Rate limiting detected (status 429). Adding delay: ${rateDelay}ms`);
-                    await new Promise(resolve => setTimeout(resolve, rateDelay));
-                }
-            }
+            return { ok: false, blocked: BLOCKED_STATUSES.includes(error.response.status), status: error.response.status };
         } else if (error.request) {
-            console.error('Request (no response received):', error.request);
+            console.error('Request (no response received):', error.message);
         } else {
             console.error('Error message:', error.message);
         }
-        return null;
+        return { ok: false, blocked: false };
     }
-} 
+}

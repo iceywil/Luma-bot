@@ -12,21 +12,81 @@ export interface LLMFieldRequest {
   isMandatory: boolean; // Flag indicating if field is mandatory
 }
 
+// --- Claude helper ---
+// Runs the local Claude Code CLI in headless mode (`claude -p`), which authenticates with your
+// Claude Code OAuth login (run `claude` once and log in), or with CLAUDE_CODE_OAUTH_TOKEN from
+// config.txt (generate one with `claude setup-token`).
+const DEFAULT_CLAUDE_MODEL = 'sonnet';
+
+export interface ClaudeResult {
+    text: string;
+    stopReason?: string;
+}
+
+export function getClaudeModel(config: Record<string, string>): string {
+    return config.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL;
+}
+
+export function callClaude(
+    prompt: string,
+    config: Record<string, string>,
+    systemPrompt: string = 'You are a precise assistant. Follow the output format instructions exactly.',
+    timeoutMs: number = 120000
+): Promise<ClaudeResult> {
+    const { spawn } = require('child_process') as typeof import('child_process');
+    const env = { ...process.env };
+    if (config.CLAUDE_CODE_OAUTH_TOKEN) {
+        env.CLAUDE_CODE_OAUTH_TOKEN = config.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+    const args = [
+        '-p',
+        '--output-format', 'json',
+        '--model', getClaudeModel(config),
+        '--system-prompt', systemPrompt,
+        '--tools', '',
+        '--setting-sources', '',
+        '--strict-mcp-config',
+        '--no-session-persistence',
+    ];
+
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+        const child = spawn(config.CLAUDE_CLI_PATH || 'claude', args, {
+            env,
+            cwd: require('os').tmpdir(),
+            timeout: timeoutMs,
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (d) => (stdout += d));
+        child.stderr.on('data', (d) => (stderr += d));
+        child.on('error', (err) => reject(new Error(`Could not run the claude CLI (is Claude Code installed?): ${err.message}`)));
+        child.on('close', (code) => {
+            let data: any;
+            try {
+                data = JSON.parse(stdout);
+            } catch {
+                return reject(new Error(`claude CLI exited with code ${code}: ${(stderr || stdout).substring(0, 500)}`));
+            }
+            if (data.is_error || typeof data.result !== 'string') {
+                return reject(new Error(`Claude returned an error: ${String(data.result ?? JSON.stringify(data)).substring(0, 500)}`));
+            }
+            console.log(`  Claude (${getClaudeModel(config)}) answered in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+            resolve({ text: data.result, stopReason: data.stop_reason });
+        });
+        child.stdin.end(prompt);
+    });
+}
+
 // Function to call LLM to choose the best free ticket
 export async function chooseBestFreeTicketLLM(
     ticketOptions: string[], 
     profileData: Record<string, string>,
     config: Record<string, string>
 ): Promise<string | null> { // Returns the name of the chosen ticket or null
-    console.log(`\n--- Choosing Best Free Ticket LLM Call (Groq API) ---`); 
+    console.log(`\n--- Choosing Best Free Ticket LLM Call (Claude) ---`);
     if (ticketOptions.length === 0) {
         console.log("No free ticket options provided.");
-        return null;
-    }
-
-    const groqApiKey = config.GROQ_API_KEY;
-    if (!groqApiKey) {
-        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
         return null;
     }
 
@@ -47,45 +107,27 @@ export async function chooseBestFreeTicketLLM(
 
     console.log(`Profile Data (for context): ${profileString}`);
     console.log(`Free Ticket Options: [${optionsString}]`);
-    console.log(`Sending prompt to Groq LLM (${config.GROQ_API_MODEL || 'llama-3.3-70b-versatile'} for ticket choice)...`);
+    console.log(`Sending prompt to Claude (${getClaudeModel(config)} for ticket choice)...`);
 
     try {
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${groqApiKey}`
-            },
-            body: JSON.stringify({
-                "model": config.GROQ_API_MODEL || "llama-3.3-70b-versatile",
-                "messages": [{ "role": "user", "content": systemMessage }],
-                "stream": false
-                // "temperature": 0.7, // Optional: Adjust temperature as needed
-            })
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            const chosenTicket = data?.choices?.[0]?.message?.content?.trim();
-            if (chosenTicket && chosenTicket.toUpperCase() !== 'NULL' && ticketOptions.includes(chosenTicket)) {
-                 console.log(`Groq LLM chose ticket: "${chosenTicket}"`);
-                 return chosenTicket;
-            } else {
-                console.log('Groq LLM did not provide a valid ticket choice or chose NULL.', chosenTicket);
-                if (data?.choices?.[0]?.finish_reason === 'length') {
-                    console.warn('Groq LLM response may have been truncated due to length.');
-                }
-                return null;
-            }
+        const { text } = await callClaude(systemMessage, config);
+        let chosenTicket = text.trim().replace(/^["']|["']$/g, '');
+        // Ticket names carry a badge after a zero-width space ("Standard​Require Approval"), which the
+        // answer often leaves out: match on the name part too
+        const namePart = (option: string) => option.split('​')[0].trim().toLowerCase();
+        if (chosenTicket && !ticketOptions.includes(chosenTicket)) {
+            chosenTicket = ticketOptions.find((option) => namePart(option) === namePart(chosenTicket)) ?? chosenTicket;
+        }
+        if (chosenTicket && chosenTicket.toUpperCase() !== 'NULL' && ticketOptions.includes(chosenTicket)) {
+             console.log(`Claude chose ticket: "${chosenTicket}"`);
+             return chosenTicket;
         } else {
-            console.error(`\x1b[31mGroq LLM (Ticket Choice) API request failed:\x1b[0m`, response.status, response.statusText);
-            const errorBody = await response.text(); 
-            console.error("\x1b[31mError body:\x1b[0m", errorBody);
+            console.log('Claude did not provide a valid ticket choice or chose NULL.', chosenTicket);
             return null;
         }
     } catch (error) {
-        console.error("\x1b[31mError during fetch to Groq LLM API (Ticket Choice):\x1b[0m", error);
-        return null; 
+        console.error("\x1b[31mError during Claude call (Ticket Choice):\x1b[0m", error);
+        return null;
     }
 }
 
@@ -95,15 +137,9 @@ export async function callLLMBatched(
     profileData: Record<string, string>,
     config: Record<string, string>
 ): Promise<Record<string, string | string[] | null>> {
-    console.log(`\n--- Batch LLM Call (Groq API) ---`); 
+    console.log(`\n--- Batch LLM Call (Claude) ---`); 
     if (fields.length === 0) {
         console.log("No fields require LLM input.");
-        return {};
-    }
-
-    const groqApiKey = config.GROQ_API_KEY;
-    if (!groqApiKey) {
-        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
         return {};
     }
 
@@ -151,41 +187,24 @@ export async function callLLMBatched(
     let currentAttempt = 0;
     let baseDelay = 2000; // Start with 2 seconds
 
-    console.log(`Sending prompt to Groq LLM (${config.GROQ_API_MODEL || 'llama-3.1-8b-instant'})... (Max Retries: ${maxRetries})`);
+    console.log(`Sending prompt to Claude (${getClaudeModel(config)})... (Max Retries: ${maxRetries})`);
 
     while (currentAttempt < maxRetries) {
         currentAttempt++;
         console.log(`  Attempt ${currentAttempt}/${maxRetries}...`);
         try {
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${groqApiKey}`
-                },
-                body: JSON.stringify({
-                    "model": config.GROQ_API_MODEL || "llama-3.1-8b-instant",
-                    "messages": [{ "role": "user", "content": prompt }],
-                    "stream": false,
-                    // "temperature": 0.2, // Lower temperature for more deterministic JSON output
-                    // "response_format": { "type": "json_object" } // If supported by Groq and model
-                }),
-                signal: AbortSignal.timeout(90000) // Increased timeout to 90s for potentially larger payloads
-            });
+            const { text: rawContentString, stopReason } = await callClaude(prompt, config, undefined, 90000);
 
-            if (response.ok) {
-                const data = await response.json();
-                let rawContentString = data?.choices?.[0]?.message?.content;
-
-                if (data?.choices?.[0]?.finish_reason === 'length') {
-                    console.warn('Groq LLM response may have been truncated due to length (Attempt ${currentAttempt}).');
+            {
+                if (stopReason === 'max_tokens') {
+                    console.warn(`Claude response may have been truncated due to length (Attempt ${currentAttempt}).`);
                 }
 
                 if (!rawContentString) {
-                     console.error('\x1b[31mCould not extract content string from Groq response (Attempt ${currentAttempt}):\x1b[0m', JSON.stringify(data, null, 2));
+                     console.error(`\x1b[31mClaude returned an empty response (Attempt ${currentAttempt}).\x1b[0m`);
                      // Let it retry
                  } else {
-                     console.log("Groq Response Content (Raw):", rawContentString);
+                     console.log("Claude Response Content (Raw):", rawContentString);
                      let jsonString = null;
                      const lastBraceIndex = rawContentString.lastIndexOf('{');
                      if (lastBraceIndex !== -1) {
@@ -202,10 +221,10 @@ export async function callLLMBatched(
                               } 
                          }
                      } else {
-                         console.warn("Could not find any '{' in the Groq response.");
+                         console.warn("Could not find any '{' in the Claude response.");
                      }
                      if (!jsonString) {
-                         console.error('\x1b[31mCould not find or extract JSON content in Groq response (Attempt ${currentAttempt}).\x1b[0m');
+                         console.error(`\x1b[31mCould not find or extract JSON content in Claude response (Attempt ${currentAttempt}).\x1b[0m`);
                          // Let it retry
                      } else {
                          try {
@@ -214,7 +233,7 @@ export async function callLLMBatched(
                              console.log("Corrected JSON string for parsing:", correctedJsonString);
                              
                              const parsedResponse = JSON.parse(correctedJsonString);
-                             console.log("Groq Response (Parsed JSON):", parsedResponse);
+                             console.log("Claude Response (Parsed JSON):", parsedResponse);
                              if (typeof parsedResponse === 'object' && parsedResponse !== null) {
                                  const finalResponse: Record<string, string | string[] | null> = {};
                                  const fieldTypeMap = new Map(fields.map(f => [f.identifier, f.type])); 
@@ -222,13 +241,13 @@ export async function callLLMBatched(
                                       if (Object.prototype.hasOwnProperty.call(parsedResponse, key)) {
                                           // Skip any top-level keys that are literally "NULL"
                                           if (key === "NULL") {
-                                              console.warn(`Groq LLM responded with a top-level key "NULL". Skipping this key.`);
+                                              console.warn(`Claude responded with a top-level key "NULL". Skipping this key.`);
                                               continue;
                                           }
                                           const value = parsedResponse[key];
                                           // Ensure the key from LLM response actually corresponds to a requested field
                                           if (!fieldTypeMap.has(key)) {
-                                              console.warn(`Groq LLM responded with an unexpected key "${key}" not present in the original field request. Skipping.`);
+                                              console.warn(`Claude responded with an unexpected key "${key}" not present in the original field request. Skipping.`);
                                               continue;
                                           }
                                           const expectedType = fieldTypeMap.get(key);
@@ -236,14 +255,14 @@ export async function callLLMBatched(
                                               if (value === null || (Array.isArray(value) && value.every(item => typeof item === 'string')) || typeof value === 'string') {
                                                   finalResponse[key] = value; 
                                               } else {
-                                                  console.warn(`Groq LLM Response for multiselect field "${key}" was unexpected type (expected string, string[], or null):`, value, `-> Treating as null.`);
+                                                  console.warn(`Claude Response for multiselect field "${key}" was unexpected type (expected string, string[], or null):`, value, `-> Treating as null.`);
                                                   finalResponse[key] = null;
                                               }
                                           } else {
                                               if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
                                                   finalResponse[key] = value === null ? null : String(value);
                                               } else {
-                                                  console.warn(`Groq LLM Response for non-multiselect field "${key}" was not string/null:`, value, `-> Converting to string or null.`);
+                                                  console.warn(`Claude Response for non-multiselect field "${key}" was not string/null:`, value, `-> Converting to string or null.`);
                                                   finalResponse[key] = value === null || typeof value === 'undefined' ? null : String(value);
                                               }
                                           }
@@ -251,32 +270,21 @@ export async function callLLMBatched(
                                   }
                                  return finalResponse;
                              } else {
-                                 console.error('\x1b[31mGroq response content was not a valid JSON object (Attempt ${currentAttempt}).\x1b[0m');
+                                 console.error(`\x1b[31mClaude response content was not a valid JSON object (Attempt ${currentAttempt}).\x1b[0m`);
                                  // Let it retry
                              }
                          } catch (parseError) {
-                             console.error('\x1b[31mError parsing Groq JSON response (Attempt ${currentAttempt}):\x1b[0m', parseError);
-                             console.error('\x1b[31mRaw Groq content was:\x1b[0m', rawContentString); // Corrected to rawContentString
+                             console.error(`\x1b[31mError parsing Claude JSON response (Attempt ${currentAttempt}):\x1b[0m`, parseError);
+                             console.error('\x1b[31mRaw Claude content was:\x1b[0m', rawContentString); // Corrected to rawContentString
                              // Let it retry
                          }
                      }
                  }
-            } else { 
-                console.error(`  Groq API request failed (Attempt ${currentAttempt}):`, response.status, response.statusText);
-                const errorBody = await response.text(); 
-                console.error("  Error body:", errorBody);
-                if (currentAttempt >= maxRetries) {
-                    console.error(`\x1b[31mGroq API call failed after ${maxRetries} attempts.\x1b[0m`);
-                    break;
-                }
             }
         } catch (error: any) {
-            console.error(`  Error during fetch to Groq API (Attempt ${currentAttempt}):\x1b[0m`, error.name, error.message);
-            if (error.name === 'AbortSignalError') { // Specifically handle timeout
-                console.warn(`  Groq API call timed out after ${90000 / 1000} seconds (Attempt ${currentAttempt}).`);
-            }
+            console.error(`  Error during Claude call (Attempt ${currentAttempt}):`, error.message);
             if (currentAttempt >= maxRetries) {
-                console.error(`\x1b[31mGroq API call failed after ${maxRetries} attempts due to fetch error.\x1b[0m`);
+                console.error(`\x1b[31mClaude call failed after ${maxRetries} attempts.\x1b[0m`);
                 break;
             }
         }
@@ -288,92 +296,9 @@ export async function callLLMBatched(
         }
     }
 
-    console.warn("Groq LLM call failed after all retries. Returning empty result.");
+    console.warn("Claude call failed after all retries. Returning empty result.");
     return {};
 } 
-
-// --- New LLM Function for API Registration Questions ---
-async function callGroqAPIWithRetries(
-    messages: { role: string; content: string }[],
-    apiKey: string,
-    model: string,
-    temperature: number = 0.1,
-    // stream: boolean = false, // Assuming stream is false for this specific sequential answer use case
-    maxRetries: number = 3,
-    initialDelay: number = 2000
-): Promise<any | null> {
-    let attempt = 0;
-    let delay = initialDelay;
-    while (attempt < maxRetries) {
-        attempt++;
-        console.log(`  Groq API call attempt ${attempt}/${maxRetries} for model ${model}...`);
-        try {
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({
-                    "model": model,
-                    "messages": messages,
-                    "stream": false, // Keep stream false for this helper, as we parse full content
-                    "temperature": temperature,
-                }),
-                signal: AbortSignal.timeout(90000) // 90 second timeout per attempt
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data?.choices?.[0]?.finish_reason === 'length') {
-                    console.warn(`Groq LLM response for model ${model} may have been truncated due to length.`);
-                }
-                return data;
-            } else {
-                console.error(`Groq API request failed (attempt ${attempt}/${maxRetries}):`, response.status, response.statusText);
-                const errorBody = await response.text();
-                console.error("Error body:", errorBody.substring(0, 500)); // Log first 500 chars of error
-                
-                let shouldRetry = false;
-                let currentDelay = delay;
-
-                if (response.status === 429) { // Specifically handle 429 Too Many Requests
-                    console.warn("Groq API returned 429 (Too Many Requests).");
-                    shouldRetry = true;
-                    currentDelay = 10000; // Wait 10 seconds for 429 errors
-                } else if (response.status >= 500) { // Retry on general server errors
-                    shouldRetry = true;
-                    // currentDelay will use the existing `delay` value which handles exponential backoff
-                }
-
-                if (shouldRetry && attempt < maxRetries) {
-                    console.log(`Retrying in ${currentDelay / 1000}s...`);
-                    await new Promise(resolve => setTimeout(resolve, currentDelay)); // Use currentDelay
-                    if (response.status !== 429) { 
-                        delay *= 2; // Apply exponential backoff for next non-429 retryable error
-                    }
-                    continue;
-                } else if (shouldRetry && attempt >= maxRetries) {
-                    console.error(`Max retries reached for status ${response.status}.`);
-                    return null; 
-                } else {
-                    // Don't retry for other client-side errors like 400, 401, 403
-                    console.error(`Not retrying for status ${response.status}.`);
-                    return null; 
-                }
-            }
-        } catch (error: any) {
-            console.error(`Error during fetch to Groq API (attempt ${attempt}/${maxRetries}):`, error.name, error.message);
-            if (attempt < maxRetries) {
-                console.log(`Retrying in ${delay / 1000}s...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                delay *= 2;
-            }
-        }
-    }
-    console.error(`Failed to get valid response from Groq API for model ${model} after ${maxRetries} attempts.`);
-    return null;
-}
 
 export async function callLLMForApiAnswers(
     questions: { id: string; label: string; type: string; options?: string[]; isMandatory: boolean }[],
@@ -381,16 +306,10 @@ export async function callLLMForApiAnswers(
     eventName: string,
     config: Record<string, string>
 ): Promise<(string | string[] | boolean | null)[] | null> {
-    console.log(`\n--- LLM Call for API Answers (Groq API) - Event: ${eventName} ---`);
+    console.log(`\n--- LLM Call for API Answers (Claude) - Event: ${eventName} ---`);
     if (questions.length === 0) {
         console.log("No questions to send to LLM for API answers.");
         return [];
-    }
-
-    const groqApiKey = config.GROQ_API_KEY;
-    if (!groqApiKey) {
-        console.error("\x1b[31mGROQ_API_KEY not found in config.txt.\x1b[0m");
-        return null;
     }
 
     const profileString = JSON.stringify(profileData);
@@ -398,29 +317,20 @@ export async function callLLMForApiAnswers(
         `${index + 1}. Label: "${q.label}", Type: ${q.type}${q.options ? `, Options: [${q.options.map(o => `"${o}"`).join(', ')}]` : ''}, Mandatory: ${q.isMandatory}`
     ).join('\n');
 
-    const systemPrompt = `You are an AI assistant that provides answers for event registration forms. Based on the user\'s profile and the questions provided, your task is to generate a JSON array of answers. \nIt is CRITICAL that each element in the array directly corresponds to a question in the exact order they are listed, and the total number of answers in the array MUST precisely match the total number of questions.\n\nKey Instructions:\n1.  Output Format: Return ONLY a single, valid JSON array. Do NOT include any other text, explanations, apologies, or markdown formatting (like \\\`\\\`\\\`json) outside of this JSON array. Your entire response must start with \'[\' and end with \']\'.\n2.  Answer Array Length: The JSON array of answers MUST contain exactly the same number of elements as there are questions. For example, if there are 5 questions, your JSON array must contain 5 answers.\n3.  Answer Types:\n    *   For text/input fields (e.g., \'text\', \'linkedin\', \'phone-number\'): Provide the answer as a string.\n    *   For dropdown/select fields: Provide the selected option as a string. Choose strictly from the provided options. If no option is a perfect match, select the closest one.\n    *   For multi-select fields: Provide a JSON array of selected option strings. Choose strictly from the provided options. If no options are suitable, provide an empty array [].\n    *   For boolean/checkbox fields (e.g., \'agree-check\', \'terms\'): Respond with a boolean value (true or false).\n4.  Mandatory vs. Optional Fields:\n    *   For *Mandatory* questions (marked as Mandatory): You MUST provide a best-effort answer. Do NOT use null. If the profile lacks information for a mandatory text field, use \"N/A\". For mandatory select/dropdowns, pick the most suitable or first option. For mandatory agree-check/terms, respond with true.\n    *   For *Non-Mandatory* (optional) questions: If the profile does not contain enough information, and you cannot infer a reasonable answer, return null (the literal JSON null, not the string \"null\") for that question\'s array element. For optional multi-select with no info, use an empty array [].\n\nUser Profile:\n${profileString}\n\nEvent Name: ${eventName}\n\nQuestions (Total: ${questions.length}):\n${questionsString}\n\nReminder: Your response MUST be a JSON array with exactly ${questions.length} elements, corresponding to the questions above, in order.\nExample for 3 questions (text, multi-select from options, mandatory agree-check):\n[\"My text answer\", [\"Option A\", \"Option C\"], true]\nExample for 2 questions (optional dropdown with no info, mandatory text with no profile info):\n[null, \"Attending\"]`;
+    const systemPrompt = `You are an AI assistant that provides answers for event registration forms. Based on the user\'s profile and the questions provided, your task is to generate a JSON array of answers. \nIt is CRITICAL that each element in the array directly corresponds to a question in the exact order they are listed, and the total number of answers in the array MUST precisely match the total number of questions.\n\nKey Instructions:\n1.  Output Format: Return ONLY a single, valid JSON array. Do NOT include any other text, explanations, apologies, or markdown formatting (like \\\`\\\`\\\`json) outside of this JSON array. Your entire response must start with \'[\' and end with \']\'.\n2.  Answer Array Length: The JSON array of answers MUST contain exactly the same number of elements as there are questions. For example, if there are 5 questions, your JSON array must contain 5 answers.\n3.  Answer Types:\n    *   For text/input fields (e.g., \'text\', \'linkedin\', \'phone-number\'): Provide the answer as a string.\n    *   For dropdown/select fields: Provide the selected option as a string. Choose strictly from the provided options. If no option is a perfect match, select the closest one.\n    *   For multi-select fields: Provide a JSON array of selected option strings. Choose strictly from the provided options. If no options are suitable, provide an empty array [].\n    *   For boolean/checkbox fields (e.g., \'agree-check\', \'terms\'): Respond with a boolean value (true or false).\n4.  Mandatory vs. Optional Fields:\n    *   For *Mandatory* questions (marked as Mandatory): You MUST provide a best-effort answer. Do NOT use null. If the profile lacks information for a mandatory text field, use \"N/A\". For mandatory select/dropdowns, pick the most suitable or first option. For mandatory agree-check/terms, respond with true.\n    *   For *Non-Mandatory* (optional) questions: If the profile does not contain enough information, and you cannot infer a reasonable answer, return null (the literal JSON null, not the string \"null\") for that question\'s array element. For optional multi-select with no info, use an empty array [].\n5.  Goal: maximise the chance of being accepted. Many events are curated or approval-based, so always give the answer most likely to get the user in, even when the profile does not confirm it. This overrides rule 4 for these questions:\n    *   Engagement or prerequisite questions (followed us / joined our group / subscribed / will attend / attending another event / applied / signed up / read something) and Yes/No interest in the host's offering, partnerships, sponsorship or services: answer affirmatively ("Yes", "Done", or the most positive option).\n    *   Free text about goals, why you want to attend, what you bring, topics to discuss: write a confident, specific 1-3 sentence answer tailored to the event and based on the profile. Never answer N/A or leave it empty.\n    *   Choice questions about role, company type or seniority: pick the option matching the profile that is most valuable to organizers (e.g. founder, investor, decision-maker).\n    *   Contact questions: use the profile's Preferred Contact when one is set.\n    *   Do not invent identity documents (passport/NRIC digits), wallet addresses, UIDs, or promo/access/VIP/referral codes, and do not claim a regulatory status such as accredited investor unless the profile says so: use the profile value or N/A.\n\nUser Profile:\n${profileString}\n\nEvent Name: ${eventName}\n\nQuestions (Total: ${questions.length}):\n${questionsString}\n\nReminder: Your response MUST be a JSON array with exactly ${questions.length} elements, corresponding to the questions above, in order.\nExample for 3 questions (text, multi-select from options, mandatory agree-check):\n[\"My text answer\", [\"Option A\", \"Option C\"], true]\nExample for 2 questions (optional dropdown with no info, mandatory text with no profile info):\n[null, \"Attending\"]`;
 
-    const messages = [{ role: 'system', content: systemPrompt }];
+    console.log("Sending sequential prompt to Claude (" + getClaudeModel(config) + " for API answers)...");
 
-    console.log("Sending sequential prompt to Groq LLM (" + (config.GROQ_API_MODEL_SEQ_ANSWERS || config.GROQ_API_MODEL || 'llama-3.1-8b-instant') + " for API answers)... (Max Retries: 3)"); // Retries handled by callGroqAPIWithRetries
-
-    const response = await callGroqAPIWithRetries(
-        messages, 
-        groqApiKey, 
-        config.GROQ_API_MODEL_SEQ_ANSWERS || 'llama-3.1-8b-instant', 
-        0.1 // Temperature
-        // maxRetries and initialDelay will use default values from callGroqAPIWithRetries definition
-    );
-
-    if (!response || !response.choices || response.choices.length === 0) {
-        console.error("Groq API Sequential Answer call failed or returned no choices.");
+    let content: string | undefined;
+    try {
+        content = (await callClaude(systemPrompt, config)).text.trim();
+    } catch (error: any) {
+        console.error("Claude Sequential Answer call failed:", error.message);
         return null;
     }
 
-    const content = response.choices[0]?.message?.content?.trim();
-
     if (content) {
-        console.log("Groq API Sequential Answer Response Content (Raw):", content);
+        console.log("Claude Sequential Answer Response Content (Raw):", content);
         let parsedJson: any = null;
         const errorLogs: string[] = [];
         let attemptedJsonString: string = "";
@@ -484,7 +394,7 @@ export async function callLLMForApiAnswers(
             return null; 
         }
     } else {
-        console.error("Groq API Sequential Answer response content is empty.");
+        console.error("Claude Sequential Answer response content is empty.");
         return null;
     }
 } 

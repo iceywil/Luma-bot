@@ -1,0 +1,14 @@
+Company: Your company
+Company Website: https://example.com
+Designation: Your role
+Email: you@example.com
+Name : Your Name
+Github: your-github
+Telegram : your-telegram
+Twitter : your-handle
+x.com : your-handle
+linkedin : https://www.linkedin.com/in/your-profile/
+Location: Your City, Country
+Type: Founder, Investor, Software Engineer
+T-shirt Size : M
+Alergies : none
